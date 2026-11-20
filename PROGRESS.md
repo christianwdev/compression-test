@@ -85,11 +85,14 @@ Baselines on this machine (Silesia total, bytes):
     258 MB/s (1.10x), memory 221 MB / 25 MB. Smaller than brotli on 11 of 12 files; `xml` is
     +0.20%. Decode slower than brotli only on `webster` (0.95x) and `nci` (0.99x).
 
+17. Triple-mapped window ring in the decoder (no slide copy): worse here. Reported memory rose
+    from 25 MB to 30 MB and `samba` decoded 15% slower, because each mapping faults separately
+    and without huge pages. Reverted.
+
 ## Next ideas, in order
 
-1. Window ring without the slide copy (decompress memory 25 MB -> about 21 MB, and faster decode
-   on files larger than the window such as `webster`).
-2. `xml`: deeper match search or cheaper headers to close the last 0.2%.
+1. `xml`: deeper match search or cheaper headers to close the last 0.2%.
+2. Decode speed on `webster`.
 
 ## Open items
 
