@@ -501,7 +501,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
 }
 
 // ---------------- block emission ----------------
-// One coded symbol: start (12 bits) | freq (12) | rANS state index (2) | precision (4)
+// One coded symbol: start (12 bits) | freq (12) | rANS state index (3) | precision (4)
 typedef u32 Ev;
 static double g_bits[8];  // lit, ll, mlk, off, align, len-extra, off-extra
 static u64 g_kinds[20];
@@ -521,7 +521,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   BitWriter bits;
   auto add = [&](u16 start, u16 freq, u8 st, u8 bits) {
     if (!freq) { fprintf(stderr, "internal error: zero-frequency symbol\n"); abort(); }
-    ev.push_back((u32)start | ((u32)freq << 12) | ((u32)st << 24) | ((u32)bits << 26));
+    ev.push_back((u32)start | ((u32)freq << 12) | ((u32)st << 24) | ((u32)bits << 27));
   };
   u32 pos = bs, li = 0; u32 r[NUM_REPS]; memcpy(r, reps_in, sizeof r);
   const int lg = M.lgchunk; const LitMode* lm = &lit_mode(0);
@@ -557,7 +557,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
     if (s.kind >= 3) {
       sym = off_symbol(s, nb, ex);
       u32 oc = omap[(pos & 3) * OFF_LENCTX + std::min<u32>(s.ml - MIN_MATCH, 3)];
-      add(coff[oc][sym], M.off[oc][sym], 2, OFF_BITS); g_bits[3] += FPRICE[(u32)M.off[oc][sym] << (MAX_BITS - OFF_BITS)]; g_bits[6] += nb >= 4 ? nb - 4 : nb;
+      add(coff[oc][sym], M.off[oc][sym], 4, OFF_BITS); g_bits[3] += FPRICE[(u32)M.off[oc][sym] << (MAX_BITS - OFF_BITS)]; g_bits[6] += nb >= 4 ? nb - 4 : nb;
       if (nb >= 4 && M.nal) { bits.put(ex >> 4, nb - 4); add(cal[alc][ex & 15], M.align[alc][ex & 15], 3, AL_BITS); g_bits[4] += FPRICE[(u32)M.align[alc][ex & 15] << (MAX_BITS - AL_BITS)]; }
       else if (nb >= 4) { bits.put(ex, nb); g_bits[4] += 4; }
       else bits.put(ex, nb);
@@ -573,7 +573,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   u16* ptr = w.data() + w.size();
   u32 x[NUM_STREAMS]; for (int i = 0; i < NUM_STREAMS; i++) x[i] = RANS_L;
   for (size_t i = ev.size(); i-- > 0;) {
-    const Ev e = ev[i]; const u32 st = (e >> 24) & 3, eb = e >> 26, fr = (e >> 12) & 0xfff; u32 xs = x[st];
+    const Ev e = ev[i]; const u32 st = (e >> 24) & 7, eb = e >> 27, fr = (e >> 12) & 0xfff; u32 xs = x[st];
     u64 xmax = (u64)((RANS_L >> eb) << 16) * fr;
     if (xs >= xmax) { *--ptr = (u16)xs; xs >>= 16; }
     x[st] = ((xs / fr) << eb) + (xs % fr) + (e & 0xfff);
@@ -629,7 +629,7 @@ bool compress(FILE* fin, u64 n, FILE* fout, const Params& prm, u64* out_size) {
     return got == want;
   };
   if (!fill()) return false;
-  std::vector<u8> out = {'G', 'T', '0', 4};
+  std::vector<u8> out = {'G', 'T', '0', 5};
   put_varint(out, n);
   out.push_back((u8)ilog2(mf.W)); out.push_back((u8)prm.lgblock);
   u64 total_out = 0;

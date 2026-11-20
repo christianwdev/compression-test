@@ -54,7 +54,7 @@ static inline void copy16(u8* d, const u8* s) { u64 a = load64(s), b = load64(s 
 
 static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 end, u32 nseq, u32* reps,
                         const u8* rp, const u8* bitp) {
-  u32 xa = load32(rp), xb = load32(rp + 4), x2 = load32(rp + 8), x3 = load32(rp + 12); rp += 16;
+  u32 xa = load32(rp), xb = load32(rp + 4), x2 = load32(rp + 8), x3 = load32(rp + 12), x4 = load32(rp + 16); rp += 4 * NUM_STREAMS;
   BitReader br; br.init(bitp);
   u32 r0 = reps[0], r1 = reps[1], r2 = reps[2], r3 = reps[3];
   u32 pos = bs, chunk_end = bs;
@@ -98,7 +98,7 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
     u32 off;
     if (kind == 3) {
       u32 c = ml - MIN_MATCH; if (c > 3) c = 3;
-      u32 slot; RANS_DEC(x2, T.off[omap[(pos & 3) * OFF_LENCTX + c]], slot, OFF_BITS);
+      u32 slot; RANS_DEC(x4, T.off[omap[(pos & 3) * OFF_LENCTX + c]], slot, OFF_BITS);
       if (slot < OFF_SLOTS) {
         u32 v;
         if (slot < 4) v = slot;
@@ -159,7 +159,7 @@ bool decompress(FILE* fin, FILE* fout) {
   init_static();
   In in(fin);
   const u8* p = in.need(6);
-  if (!p || memcmp(p, "GT0\4", 4)) return false;
+  if (!p || memcmp(p, "GT0\5", 4)) return false;
   in.pos += 4;
   size_t av = in.avail_hint(); if (av < 3) return false;
   p = in.buf.data() + in.pos; const u8* p0 = p;

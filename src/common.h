@@ -16,7 +16,9 @@ namespace gt {
 enum { LIT_BITS = 11, MLK_BITS = 11, LL_BITS = 10, OFF_BITS = 10, AL_BITS = 8, MAX_BITS = 12, RANS_L = 1 << 16 };
 enum { MIN_MATCH = 2, MAX_MATCH = 65537, PAD = 16 };
 enum { LL_SYMS = 56, MLC_SYMS = 54, MLK_SYMS = 4 * MLC_SYMS, OFF_SLOTS = 60, NUM_SPECIAL = 13, OFF_SYMS = OFF_SLOTS + NUM_SPECIAL, ALIGN_SYMS = 16 };
-enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 10, NUM_REPS = 4 };
+// rANS states: two alternate over literals; literal-run, match (plus low offset bits) and offset
+// symbols each have their own, so their decode chains overlap.
+enum { NUM_STREAMS = 5, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 10, NUM_REPS = 4 };
 // Sequence kinds: 0..2 = rep0..rep2, 3 = new offset (slot coded), 4 = rep3, 5..16 = rep0/rep1 +- 1..3.
 // Kinds >= 3 are signalled as kind 3 in the MLK symbol; the OFF symbol then selects slot or special.
 static const int NEAR_DELTA[6] = {-1, 1, -2, 2, -3, 3};
