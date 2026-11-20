@@ -27,6 +27,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "-d")) P.depth = v; else if (!strcmp(a, "-n")) P.nice = v;
     else if (!strcmp(a, "-p")) P.passes = v; else if (!strcmp(a, "-c")) P.maxcl = v;
     else if (!strcmp(a, "-h")) P.hashbits = v; else if (!strcmp(a, "-m")) P.modemask = v;
+    else if (!strcmp(a, "-k")) P.lgchunk = v; else if (!strcmp(a, "-t")) P.maxtypes = v;
     else { fprintf(stderr, "unknown option %s\n", a); return 2; }
     i++;
   }

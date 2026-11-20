@@ -19,7 +19,7 @@ enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 8, NUM_REPS = 
 // Sequence kinds: 0..2 = rep0..rep2, 3 = new offset (slot coded), 4 = rep3, 5..16 = rep0/rep1 +- 1..3.
 // Kinds >= 3 are signalled as kind 3 in the MLK symbol; the OFF symbol then selects slot or special.
 static const int NEAR_DELTA[6] = {-1, 1, -2, 2, -3, 3};
-enum { MLK_NCTX = 12, MLK_MAXCL = 6 };
+enum { MLK_NCTX = 12, NT = 16, MAXCH = 4096, LL_MAXCL = 8, MLK_MAXCL = 16, OFF_MAXCL = 16, AL_MAXCL = 4 };
 static inline u32 mlk_ctx(u32 ll) {  // context for the match symbol from the literal run length
   return ll < 8 ? ll : ll < 12 ? 8 : ll < 16 ? 9 : ll < 32 ? 10 : 11;
 }
@@ -111,6 +111,8 @@ struct Params {
   int maxcl = 32;      // max literal clusters
   int hashbits = 20;
   int modemask = 0xff; // enabled literal modes
+  int lgchunk = 13;    // table-switch granularity (bytes = 1<<lgchunk)
+  int maxtypes = 8;    // max table sets per block for each of literals / commands / distances
   int verbose = 0;
 };
 
