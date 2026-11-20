@@ -113,8 +113,11 @@ struct TabModel {
   u16 cls[3][16][16]; u16 top[16][2]; u16 prev_cls[256]; bool have_prev;
   TabModel();
 };
-void write_table(RcEnc& rc, TabModel& tm, const u16* f, int n);
-void read_table(RcDec& rc, TabModel& tm, u16* f, int n);
+void write_table(RcEnc& rc, TabModel& tm, const u16* f, int n, int bits);
+bool read_table(RcDec& rc, TabModel& tm, u16* f, int n, int bits);
+// Optionally coarsens a normalised table (fewer significant bits per frequency, the most frequent
+// symbol absorbing the rounding) when the header bits saved exceed the coding loss on `cnt`.
+void coarsen_freqs(const u32* cnt, int n, u16* f, int bits);
 struct MapModel { u16 same[2]; MapModel() { same[0] = same[1] = 1024; } };
 void write_map(RcEnc& rc, MapModel& mm, const u8* map, int nctx, int ncl);
 void read_map(RcDec& rc, MapModel& mm, u8* map, int nctx, int ncl);
@@ -131,6 +134,7 @@ struct Params {
   double hdr_nz = 8.0, hdr_base = 32.0;  // table cost model used when clustering: base + per used symbol
   double align_gain = 0.985;  // model low offset bits only if that costs less than this share of raw
   int posctx = 7;      // bit 0/1/2: allow position contexts for literal-run / match / offset symbols
+  int coarse = 0;      // 1: allow coarse frequency tables (tested: no net gain, off by default)
   int smooth = 0;      // smoothed prices for symbols a table has not seen
   double unseen_cap = 14.0;
   int rankslots = 32;  // contexts kept separate when ranking literal modes for a type

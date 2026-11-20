@@ -71,11 +71,14 @@ Baselines on this machine (Silesia total, bytes):
 14. Re-tuned the clustering table-cost estimate after headers got cheaper: no gain (lower values
     were 0.07-0.14% worse on the test set). Left unchanged.
 
+15. Coarse frequency tables in headers (fewer significant bits, chosen per table by net saving):
+    +0.04% worse on the test set overall (small wins on text, losses elsewhere). Kept in the
+    format but off by default.
+
 ## Next ideas, in order
 
-1. Coarser table frequencies where a table codes few symbols (cheaper headers; targets `xml`).
-2. Column contexts for fixed-width records (generalises the pos & 3 contexts; targets `sao`).
-3. Window ring without the slide copy, to bring decompress memory from 25 MB to about 21 MB.
+1. Column contexts for fixed-width records (generalises the pos & 3 contexts; targets `sao`).
+2. Window ring without the slide copy, to bring decompress memory from 25 MB to about 21 MB.
 
 ## Open items
 

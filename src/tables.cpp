@@ -87,37 +87,89 @@ TabModel::TabModel() {
 }
 static inline int coarse(int c) { return c == 0 ? 0 : c <= 3 ? 1 : 2; }
 
-void write_table(RcEnc& rc, TabModel& tm, const u16* f, int n) {
+// Coarse tables: every frequency except the anchor (the first most frequent symbol) keeps only
+// `keep` bits below its leading one; the anchor is not stored and takes whatever is left.
+static int table_anchor(const u16* f, int n) { int a = 0; for (int i = 1; i < n; i++) if (f[i] > f[a]) a = i; return a; }
+static bool fits_keep(const u16* f, int n, int keep, int a) {
+  for (int i = 0; i < n; i++) if (i != a && f[i]) {
+    int mb = (int)ilog2(f[i]);
+    if (mb > keep && (f[i] & ((1u << (mb - keep)) - 1))) return false;
+  }
+  return true;
+}
+static int table_keep(const u16* f, int n, int a) {  // 0 = exact, else 1..3
+  for (int k = 1; k <= 3; k++) if (fits_keep(f, n, k, a)) return k;
+  return 0;
+}
+
+void coarsen_freqs(const u32* cnt, int n, u16* f, int bits) {
+  const int SCALE = 1 << bits;
+  const int a = table_anchor(f, n);
+  if (table_keep(f, n, a)) return;
+  double bestgain = 0; int bestk = 0; u16 best[256], g[256];
+  for (int k = 1; k <= 3; k++) {
+    int sum = 0; double saved = -10, loss = 0;  // 8 bits for the anchor index, 2 for the mode
+    for (int i = 0; i < n; i++) {
+      g[i] = f[i];
+      if (i == a || !f[i]) continue;
+      int mb = (int)ilog2(f[i]);
+      if (mb > k) { u32 q = 1u << (mb - k); u32 v = (f[i] + q / 2) & ~(q - 1); g[i] = (u16)v; saved += mb - k; }
+      sum += g[i];
+    }
+    int av = SCALE - sum;
+    saved += f[a] ? (int)ilog2(f[a]) + 2 : 0;
+    if (av < 1) continue;
+    g[a] = (u16)av;
+    if (table_anchor(g, n) != a || !fits_keep(g, n, k, a)) continue;
+    for (int i = 0; i < n; i++) if (cnt[i]) loss += cnt[i] * log2((double)f[i] / g[i]);
+    double gain = saved - loss;
+    if (gain > bestgain) { bestgain = gain; bestk = k; memcpy(best, g, n * sizeof(u16)); }
+  }
+  if (bestk) memcpy(f, best, n * sizeof(u16));
+}
+
+void write_table(RcEnc& rc, TabModel& tm, const u16* f, int n, int bits) {
+  (void)bits;
+  const int a = table_anchor(f, n); const int keep = table_keep(f, n, a);
+  rc.direct(keep, 2); if (keep) rc.direct(a, 8);
   int pc = 0;
   for (int i = 0; i < n; i++) {
+    if (keep && i == a) { tm.prev_cls[i] = 15; continue; }
     int c = f[i] ? (int)ilog2(f[i]) + 1 : 0;
     u16* t = tm.cls[tm.have_prev ? coarse(tm.prev_cls[i]) : 1][pc];
     for (int m = 1, k = 3; k >= 0; k--) { int b = (c >> k) & 1; rc.bit(t[m], b); m = (m << 1) | b; }
     if (c >= 2) {
-      u32 r = f[i] - (1u << (c - 1));
-      rc.bit(tm.top[c][0], (r >> (c - 2)) & 1);
-      if (c >= 3) rc.direct(r & ((1u << (c - 2)) - 1), c - 2);
+      int mb = c - 1, kb = keep && mb > keep ? keep : mb;
+      u32 r = (f[i] - (1u << mb)) >> (mb - kb);
+      rc.bit(tm.top[c][0], (r >> (kb - 1)) & 1);
+      if (kb >= 2) rc.direct(r & ((1u << (kb - 1)) - 1), kb - 1);
     }
     tm.prev_cls[i] = (u16)c; pc = c;
   }
   tm.have_prev = true;
 }
-void read_table(RcDec& rc, TabModel& tm, u16* f, int n) {
-  int pc = 0;
+bool read_table(RcDec& rc, TabModel& tm, u16* f, int n, int bits) {
+  const int keep = (int)rc.direct(2); const int a = keep ? (int)rc.direct(8) : -1;
+  if (a >= n) return false;
+  int pc = 0; u32 sum = 0;
   for (int i = 0; i < n; i++) {
+    if (i == a) { tm.prev_cls[i] = 15; f[i] = 0; continue; }
     u16* t = tm.cls[tm.have_prev ? coarse(tm.prev_cls[i]) : 1][pc];
     int m = 1; for (int k = 0; k < 4; k++) m = (m << 1) | rc.bit(t[m]);
     int c = m & 15;
     u32 v = 0;
     if (c == 1) v = 1;
     else if (c >= 2) {
-      u32 r = (u32)rc.bit(tm.top[c][0]) << (c - 2);
-      if (c >= 3) r |= rc.direct(c - 2);
-      v = (1u << (c - 1)) + r;
+      int mb = c - 1, kb = keep && mb > keep ? keep : mb;
+      u32 r = (u32)rc.bit(tm.top[c][0]) << (kb - 1);
+      if (kb >= 2) r |= rc.direct(kb - 1);
+      v = (1u << mb) + (r << (mb - kb));
     }
-    f[i] = (u16)v; tm.prev_cls[i] = (u16)c; pc = c;
+    f[i] = (u16)v; sum += v; tm.prev_cls[i] = (u16)c; pc = c;
   }
+  if (a >= 0) { if (sum >= (1u << bits)) return false; f[a] = (u16)((1u << bits) - sum); }
   tm.have_prev = true;
+  return true;
 }
 
 // context map: for each entry a "same as the previous entry" flag, then the id if it differs

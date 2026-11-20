@@ -112,6 +112,7 @@ static void default_prices(Prices& P, int lgchunk) {
   for (int s = 0; s < OFF_SYMS; s++) P.off[0][s] = s < OFF_SLOTS ? 5.5f : 8.0f;
   for (int s = 0; s < ALIGN_SYMS; s++) P.align[0][s] = 4.0f;
 }
+static int g_coarse = 1;
 static double g_unseen_cap = 14.0;
 static int g_smooth = 1;
 // Prices for the parser. A symbol a table has not seen is not priced at a flat maximum: it is priced
@@ -278,7 +279,7 @@ template <int D> static int cluster_pos(const std::vector<HistT<D>>& h, int ntyp
   const std::vector<HistT<D>>* o;
   if (cf < cc) { o = &of; memcpy(map, mf.data(), nfull); }
   else { o = &oc; for (int t = 0; t < ntypes; t++) for (int a = 0; a < 4; a++) for (int k = 0; k < sub; k++) map[(t * 4 + a) * sub + k] = mc[t * sub + k]; }
-  for (size_t c = 0; c < o->size(); c++) { normalize_freqs((*o)[c].c, D, tab[c], bits); cnt[c] = (*o)[c].tot; }
+  for (size_t c = 0; c < o->size(); c++) { normalize_freqs((*o)[c].c, D, tab[c], bits); if (g_coarse) coarsen_freqs((*o)[c].c, D, tab[c], bits); cnt[c] = (*o)[c].tot; }
   return (int)o->size();
 }
 
@@ -349,7 +350,7 @@ static void build_models(const u8* base, u32 bs, u32 bn, u32 start, u32 end, con
     }
     cluster(h, (int)nmap, prm.maxcl, M.litmap, outh, cost);
     M.ncl = (int)outh.size();
-    for (int c = 0; c < M.ncl; c++) { normalize_freqs(outh[c].c, 256, M.lit[c], LIT_BITS); M.litn[c] = outh[c].tot; }
+    for (int c = 0; c < M.ncl; c++) { normalize_freqs(outh[c].c, 256, M.lit[c], LIT_BITS); if (g_coarse) coarsen_freqs(outh[c].c, 256, M.lit[c], LIT_BITS); M.litn[c] = outh[c].tot; }
   }
   // --- command and distance tables
   auto hll = zeros<LL_SYMS>(M.nct * LL_NCTX); auto hmlk = zeros<MLK_SYMS>(M.nct * MLK_NCTX);
@@ -605,19 +606,19 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   u32 nmap = 0; for (int t = 0; t < M.nlt; t++) { hw.direct(M.lmode[t], 4); nmap += lit_mode(M.lmode[t]).nctx; }
   hw.direct(M.ncl - 1, 6); write_map(hw, mm[3], M.litmap, (int)nmap, M.ncl);
   HSTAT(1);
-  for (int c = 0; c < M.ncl; c++) write_table(hw, tml, M.lit[c], 256);
+  for (int c = 0; c < M.ncl; c++) write_table(hw, tml, M.lit[c], 256, LIT_BITS);
   HSTAT(2);
   hw.direct(M.nll - 1, 3); write_map(hw, mm[4], M.llmap, M.nct * LL_NCTX, M.nll);
-  for (int c = 0; c < M.nll; c++) write_table(hw, tmll, M.ll[c], LL_SYMS);
+  for (int c = 0; c < M.nll; c++) write_table(hw, tmll, M.ll[c], LL_SYMS, LL_BITS);
   HSTAT(3);
   hw.direct(M.nmk - 1, 4); write_map(hw, mm[5], M.mlkmap, M.nct * MLK_NCTX, M.nmk);
-  for (int c = 0; c < M.nmk; c++) write_table(hw, tmmk, M.mlk[c], MLK_SYMS);
+  for (int c = 0; c < M.nmk; c++) write_table(hw, tmmk, M.mlk[c], MLK_SYMS, MLK_BITS);
   HSTAT(4);
   hw.direct(M.nof - 1, 4); write_map(hw, mm[6], M.offmap, M.ndt * OFF_NCTX, M.nof);
-  for (int c = 0; c < M.nof; c++) write_table(hw, tmof, M.off[c], OFF_SYMS);
+  for (int c = 0; c < M.nof; c++) write_table(hw, tmof, M.off[c], OFF_SYMS, OFF_BITS);
   HSTAT(5);
   hw.direct(M.nal, 3); if (M.nal) write_map(hw, mm[7], M.almap, M.ndt, M.nal);
-  for (int c = 0; c < M.nal; c++) write_table(hw, tmal, M.align[c], ALIGN_SYMS);
+  for (int c = 0; c < M.nal; c++) write_table(hw, tmal, M.align[c], ALIGN_SYMS, AL_BITS);
   hw.finish();
   HSTAT(6);
 #undef HSTAT
@@ -634,7 +635,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
 // not the whole file.
 bool compress(FILE* fin, u64 n, FILE* fout, const Params& prm, u64* out_size) {
   if (n >= 0xfff00000ull) { fprintf(stderr, "inputs of 4 GB or more are not supported\n"); return false; }
-  einit(); g_smooth = prm.smooth; g_unseen_cap = prm.unseen_cap; g_hdr_nz = prm.hdr_nz; g_hdr_base = prm.hdr_base;
+  einit(); g_coarse = prm.coarse; g_smooth = prm.smooth; g_unseen_cap = prm.unseen_cap; g_hdr_nz = prm.hdr_nz; g_hdr_base = prm.hdr_base;
   MF mf(n, prm);
   const u32 B = 1u << prm.lgblock;
   const u64 LOOK = (u64)std::max(prm.nice, 1 << 16) + 64;
@@ -652,7 +653,7 @@ bool compress(FILE* fin, u64 n, FILE* fout, const Params& prm, u64* out_size) {
     return got == want;
   };
   if (!fill()) return false;
-  std::vector<u8> out = {'G', 'T', '0', 6};
+  std::vector<u8> out = {'G', 'T', '0', 7};
   put_varint(out, n);
   out.push_back((u8)ilog2(mf.W)); out.push_back((u8)prm.lgblock);
   u64 total_out = 0;
