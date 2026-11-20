@@ -106,19 +106,27 @@ void read_map(BitReader& br, u8* map, int nctx, int ncl);
 
 struct Params {
   int lgwin = 24;      // window = 1<<lgwin
-  int lgblock = 20;    // block size
+  int lgblock = 21;    // block size
   int depth = 64;      // matchfinder tree depth
   int nice = 128;      // "good enough" match length
-  int passes = 2;      // optimal-parse iterations per block
+  int passes = 3;      // optimal-parse iterations per block
   int maxcl = 32;      // max literal clusters
   int hashbits = 20;
   int modemask = 0xffff; // enabled literal modes
+  int fullevery = 0;   // 1: re-evaluate all literal modes on every model build
+  int modetop = 99;     // literal modes fully evaluated after the cheap ranking (>= NUM_LITMODES: all)
+  double alpha = 0.1;  // smoothing constant of the cheap ranking
+  int lgsub = 20;      // match-storage / price-refinement unit inside a block
+  int lgseg = 18;      // optimal-parse segment size
+  int far2 = 1 << 8;   // max offset for which a new length-2 match is considered
+  int far3 = 1 << 14;  // same for length 3
   int lgchunk = 13;    // table-switch granularity (bytes = 1<<lgchunk)
-  int maxtypes = 8;    // max table sets per block for each of literals / commands / distances
+  int maxtypes = 16;   // max table sets per block for each of literals / commands / distances
   int verbose = 0;
 };
 
-std::vector<u8> compress(const u8* in, size_t n, const Params& p);
+// `base` must have PAD readable zero bytes before it and PAD + 8 readable bytes after base + n.
+std::vector<u8> compress(const u8* base, size_t n, const Params& p);
 // Decodes into buf; the output is buf[out_off .. out_off + out_len).
 bool decompress(const u8* in, size_t n, std::vector<u8>& buf, size_t& out_off, size_t& out_len);
 
