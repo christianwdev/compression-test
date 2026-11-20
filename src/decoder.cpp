@@ -159,7 +159,7 @@ bool decompress(FILE* fin, FILE* fout) {
   init_static();
   In in(fin);
   const u8* p = in.need(6);
-  if (!p || memcmp(p, "GT0\5", 4)) return false;
+  if (!p || memcmp(p, "GT0\6", 4)) return false;
   in.pos += 4;
   size_t av = in.avail_hint(); if (av < 3) return false;
   p = in.buf.data() + in.pos; const u8* p0 = p;
@@ -199,33 +199,33 @@ bool decompress(FILE* fin, FILE* fout) {
       u32 hdr = (u32)get_varint(p), rb = (u32)get_varint(p), bb = (u32)get_varint(p);
       in.pos += p - p0;
       p = in.need((size_t)hdr + rb + bb); if (!p) { ok = false; break; }
-      BitReader br; br.init(p);
-      int lg = br.get(5); T->lgchunk = lg;
+      RcDec br; br.init(p); MapModel mm[8]; TabModel tml, tmll, tmmk, tmof, tmal;
+      int lg = (int)br.direct(5); T->lgchunk = lg;
       int nch = (int)((raw + (1u << lg) - 1) >> lg);
       if (nch > MAXCH) { ok = false; break; }
-      int nlt = br.get(4) + 1; read_map(br, T->ltype, nch, nlt);
-      int nct = br.get(4) + 1; read_map(br, T->ctype, nch, nct);
-      int ndt = br.get(4) + 1; read_map(br, T->dtype, nch, ndt);
+      int nlt = (int)br.direct(4) + 1; read_map(br, mm[0], T->ltype, nch, nlt);
+      int nct = (int)br.direct(4) + 1; read_map(br, mm[1], T->ctype, nch, nct);
+      int ndt = (int)br.direct(4) + 1; read_map(br, mm[2], T->dtype, nch, ndt);
       u32 nmap = 0;
       for (int t = 0; t < nlt; t++) {
-        int mode = br.get(4); if (mode >= NUM_LITMODES) { ok = false; break; }
+        int mode = (int)br.direct(4); if (mode >= NUM_LITMODES) { ok = false; break; }
         T->lmode[t] = (u8)mode; T->lbase[t] = nmap; nmap += lit_mode(mode).nctx;
       }
       if (!ok) break;
-      int ncl = br.get(6) + 1;
-      read_map(br, T->litmap, (int)nmap, ncl);
+      int ncl = (int)br.direct(6) + 1;
+      read_map(br, mm[3], T->litmap, (int)nmap, ncl);
       u16 f[256];
-      for (int c = 0; c < ncl; c++) { read_table(br, f, 256); if (!build_dec(f, 256, T->lit[c], LIT_BITS)) ok = false; }
-      int nll = br.get(3) + 1; read_map(br, T->llmap, nct * LL_NCTX, nll);
-      for (int c = 0; c < nll; c++) { read_table(br, f, LL_SYMS); if (!build_dec(f, LL_SYMS, T->ll[c], LL_BITS)) ok = false; }
-      int nmk = br.get(4) + 1; read_map(br, T->mlkmap, nct * MLK_NCTX, nmk);
-      for (int c = 0; c < nmk; c++) { read_table(br, f, MLK_SYMS); if (!build_dec(f, MLK_SYMS, T->mlk[c], MLK_BITS)) ok = false; }
-      int nof = br.get(4) + 1; read_map(br, T->offmap, ndt * OFF_NCTX, nof);
-      for (int c = 0; c < nof; c++) { read_table(br, f, OFF_SYMS); if (!build_dec(f, OFF_SYMS, T->off[c], OFF_BITS)) ok = false; }
-      int nal = br.get(3); T->rawalign = nal == 0;  // 0: low offset bits are stored raw
+      for (int c = 0; c < ncl; c++) { read_table(br, tml, f, 256); if (!build_dec(f, 256, T->lit[c], LIT_BITS)) ok = false; }
+      int nll = (int)br.direct(3) + 1; read_map(br, mm[4], T->llmap, nct * LL_NCTX, nll);
+      for (int c = 0; c < nll; c++) { read_table(br, tmll, f, LL_SYMS); if (!build_dec(f, LL_SYMS, T->ll[c], LL_BITS)) ok = false; }
+      int nmk = (int)br.direct(4) + 1; read_map(br, mm[5], T->mlkmap, nct * MLK_NCTX, nmk);
+      for (int c = 0; c < nmk; c++) { read_table(br, tmmk, f, MLK_SYMS); if (!build_dec(f, MLK_SYMS, T->mlk[c], MLK_BITS)) ok = false; }
+      int nof = (int)br.direct(4) + 1; read_map(br, mm[6], T->offmap, ndt * OFF_NCTX, nof);
+      for (int c = 0; c < nof; c++) { read_table(br, tmof, f, OFF_SYMS); if (!build_dec(f, OFF_SYMS, T->off[c], OFF_BITS)) ok = false; }
+      int nal = (int)br.direct(3); T->rawalign = nal == 0;  // 0: low offset bits are stored raw
       if (nal > AL_MAXCL) { ok = false; break; }
-      if (nal) read_map(br, T->almap, ndt, nal); else memset(T->almap, 0, sizeof T->almap);
-      for (int c = 0; c < nal; c++) { read_table(br, f, ALIGN_SYMS); if (!build_dec(f, ALIGN_SYMS, T->align[c], AL_BITS)) ok = false; }
+      if (nal) read_map(br, mm[7], T->almap, ndt, nal); else memset(T->almap, 0, sizeof T->almap);
+      for (int c = 0; c < nal; c++) { read_table(br, tmal, f, ALIGN_SYMS); if (!build_dec(f, ALIGN_SYMS, T->align[c], AL_BITS)) ok = false; }
       if (!ok) break;
       const u8* rp = p + hdr; const u8* bitp = rp + rb;
       u32 end = pos + raw;

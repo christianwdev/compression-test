@@ -34,57 +34,112 @@ void normalize_freqs(const u32* cnt, int n, u16* f, int bits) {
   }
 }
 
-// class (4 bits): 0 = zero, 1..12 = bit length of freq (+ len-1 mantissa bits),
-// 13 = zero run 2..9 (3 bits), 14 = zero run 10..265 (8 bits)
-void write_table(BitWriter& bw, const u16* f, int n) {
-  int i = 0;
-  while (i < n) {
-    if (f[i] == 0) {
-      int run = 1; while (i + run < n && f[i + run] == 0 && run < 265) run++;
-      if (run == 1) bw.put(0, 4);
-      else if (run < 10) { bw.put(13, 4); bw.put(run - 2, 3); }
-      else { bw.put(14, 4); bw.put(run - 10, 8); }
-      i += run;
-    } else {
-      u32 c = ilog2(f[i]) + 1;
-      bw.put(c, 4); if (c > 1) bw.put(f[i] - (1u << (c - 1)), c - 1);
-      i++;
+// ---- adaptive binary range coder (the LZMA construction), used only for block headers
+enum { RC_BITS = 11, RC_MOVE = 4, RC_TOP = 1 << 24 };
+
+void RcEnc::shift_low() {
+  if ((u32)low < 0xff000000u || (low >> 32) != 0) {
+    u8 carry = (u8)(low >> 32), c = cache;
+    do { out.push_back((u8)(c + carry)); c = 0xff; } while (--pending != 0);
+    cache = (u8)((u32)low >> 24);
+  }
+  pending++; low = (u32)low << 8;
+}
+void RcEnc::bit(u16& p, int b) {
+  u32 bound = (range >> RC_BITS) * p;
+  if (!b) { range = bound; p += ((1 << RC_BITS) - p) >> RC_MOVE; }
+  else { low += bound; range -= bound; p -= p >> RC_MOVE; }
+  while (range < RC_TOP) { range <<= 8; shift_low(); }
+}
+void RcEnc::direct(u32 v, int nb) {
+  for (int i = nb - 1; i >= 0; i--) {
+    range >>= 1; if ((v >> i) & 1) low += range;
+    while (range < RC_TOP) { range <<= 8; shift_low(); }
+  }
+}
+void RcEnc::finish() { for (int i = 0; i < 5; i++) shift_low(); }
+
+void RcDec::init(const u8* s) { p = s + 1; code = 0; range = 0xffffffffu; for (int i = 0; i < 4; i++) code = (code << 8) | *p++; }
+int RcDec::bit(u16& pr) {
+  u32 bound = (range >> RC_BITS) * pr; int b;
+  if (code < bound) { range = bound; pr += ((1 << RC_BITS) - pr) >> RC_MOVE; b = 0; }
+  else { code -= bound; range -= bound; pr -= pr >> RC_MOVE; b = 1; }
+  while (range < RC_TOP) { range <<= 8; code = (code << 8) | *p++; }
+  return b;
+}
+u32 RcDec::direct(int nb) {
+  u32 v = 0;
+  for (int i = 0; i < nb; i++) {
+    range >>= 1; u32 b = code >= range; if (b) code -= range; v = (v << 1) | b;
+    while (range < RC_TOP) { range <<= 8; code = (code << 8) | *p++; }
+  }
+  return v;
+}
+
+// A frequency is stored as its bit length ("class", 0 for an unused symbol) followed by the bits
+// below the leading one. The class is coded with a 4-bit tree whose context is the class of the
+// previous symbol in this table and a coarse class of the same symbol in the previous table of the
+// alphabet; the top remaining bit is modelled per class, the rest are stored plainly.
+TabModel::TabModel() {
+  for (auto& a : cls) for (auto& b : a) for (auto& c : b) c = 1024;
+  for (auto& a : top) for (auto& c : a) c = 1024;
+  memset(prev_cls, 0, sizeof prev_cls); have_prev = false;
+}
+static inline int coarse(int c) { return c == 0 ? 0 : c <= 3 ? 1 : 2; }
+
+void write_table(RcEnc& rc, TabModel& tm, const u16* f, int n) {
+  int pc = 0;
+  for (int i = 0; i < n; i++) {
+    int c = f[i] ? (int)ilog2(f[i]) + 1 : 0;
+    u16* t = tm.cls[tm.have_prev ? coarse(tm.prev_cls[i]) : 1][pc];
+    for (int m = 1, k = 3; k >= 0; k--) { int b = (c >> k) & 1; rc.bit(t[m], b); m = (m << 1) | b; }
+    if (c >= 2) {
+      u32 r = f[i] - (1u << (c - 1));
+      rc.bit(tm.top[c][0], (r >> (c - 2)) & 1);
+      if (c >= 3) rc.direct(r & ((1u << (c - 2)) - 1), c - 2);
     }
+    tm.prev_cls[i] = (u16)c; pc = c;
   }
+  tm.have_prev = true;
 }
-void read_table(BitReader& br, u16* f, int n) {
-  int i = 0;
-  while (i < n) {
-    u32 c = br.get(4);
-    if (c == 0) f[i++] = 0;
-    else if (c == 13) { int run = br.get(3) + 2; while (run-- && i < n) f[i++] = 0; }
-    else if (c == 14) { int run = br.get(8) + 10; while (run-- && i < n) f[i++] = 0; }
-    else f[i++] = (u16)((c > 1 ? br.get(c - 1) : 0) + (1u << (c - 1)));
+void read_table(RcDec& rc, TabModel& tm, u16* f, int n) {
+  int pc = 0;
+  for (int i = 0; i < n; i++) {
+    u16* t = tm.cls[tm.have_prev ? coarse(tm.prev_cls[i]) : 1][pc];
+    int m = 1; for (int k = 0; k < 4; k++) m = (m << 1) | rc.bit(t[m]);
+    int c = m & 15;
+    u32 v = 0;
+    if (c == 1) v = 1;
+    else if (c >= 2) {
+      u32 r = (u32)rc.bit(tm.top[c][0]) << (c - 2);
+      if (c >= 3) r |= rc.direct(c - 2);
+      v = (1u << (c - 1)) + r;
+    }
+    f[i] = (u16)v; tm.prev_cls[i] = (u16)c; pc = c;
   }
+  tm.have_prev = true;
 }
 
-
-// context map: runs of (cluster id, run length); run length = 4-bit bit count + mantissa
-void write_map(BitWriter& bw, const u8* map, int nctx, int ncl) {
+// context map: for each entry a "same as the previous entry" flag, then the id if it differs
+void write_map(RcEnc& rc, MapModel& mm, const u8* map, int nctx, int ncl) {
   int mb = 0; while ((1 << mb) < ncl) mb++;
-  int i = 0;
-  while (i < nctx) {
-    int run = 1; while (i + run < nctx && map[i + run] == map[i]) run++;
-    bw.put(map[i], mb);
-    u32 c = ilog2(run) + 1; bw.put(c, 4); if (c > 1) bw.put(run - (1u << (c - 1)), c - 1);
-    i += run;
+  int prev = 0, ps = 0;
+  for (int i = 0; i < nctx; i++) {
+    int same = map[i] == prev;
+    rc.bit(mm.same[ps], !same);
+    if (!same) rc.direct(map[i], mb);
+    prev = map[i]; ps = !same;
   }
 }
-void read_map(BitReader& br, u8* map, int nctx, int ncl) {
+void read_map(RcDec& rc, MapModel& mm, u8* map, int nctx, int ncl) {
   int mb = 0; while ((1 << mb) < ncl) mb++;
-  int i = 0;
-  while (i < nctx) {
-    u8 id = (u8)br.get(mb); u32 c = br.get(4);
-    int run = (int)((c > 1 ? br.get(c - 1) : 0) + (1u << (c - 1)));
-    while (run-- && i < nctx) map[i++] = id;
+  int prev = 0, ps = 0;
+  for (int i = 0; i < nctx; i++) {
+    int diff = rc.bit(mm.same[ps]);
+    if (diff) prev = (int)rc.direct(mb);
+    map[i] = (u8)prev; ps = diff;
   }
 }
-
 
 static LitMode g_modes[NUM_LITMODES];
 static bool g_modes_init = false;

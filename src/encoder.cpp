@@ -382,6 +382,18 @@ static void build_models(const u8* base, u32 bs, u32 bn, u32 start, u32 end, con
 // ---------------- optimal parse ----------------
 struct Node { float cost; u32 ml, off, ll, kind; u32 rep[NUM_REPS]; };
 
+// Lengths worth trying for a match of length `len`: every length up to `full`, then only the last
+// length of each length-code bucket (the price is constant inside a bucket) and `len` itself.
+static inline u32 next_len(u32 l, u32 len, u32 full) {
+  if (l < full || l + 1 >= len) return l + 1;
+  u32 v = l + 1 - MIN_MATCH;                 // code value of the next length
+  if (v < 32) return l + 1;
+  u32 n = ilog2(v); u32 half = 1u << (n - 1);
+  u32 end = ((v >> (n - 1)) + 1) * half - 1; // last value in v's bucket
+  u32 r = end + MIN_MATCH;
+  return r < len ? r : len;
+}
+
 static inline float pll(const float* t, u32 v) { u32 s, nb, ex; ll_code(v, s, nb, ex); return t[s] + nb; }
 
 // Parses the sub-block [bs+sb, bs+sb+bn) of the block starting at bs. carry_ll literals precede it
@@ -391,7 +403,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
                   u32* carry_out, u32* reps_out) {
   const u32 SEG = 1u << prm.lgseg;
   const u32 nice = prm.nice; const int lg = P.lgchunk;
-  const u32 t2 = prm.far2, t3 = prm.far3;
+  const u32 t2 = prm.far2, t3 = prm.far3; const u32 full = (u32)prm.fulllen;
   seqs.clear();
   u32 reps[NUM_REPS]; memcpy(reps, reps_in, sizeof reps);
   size_t mbase = 0;
@@ -455,7 +467,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
       }
       if (maxl < 2) continue;
       for (u32 k = 0; k < 3; k++) {
-        for (u32 l = MIN_MATCH; l <= rl[k]; l++) relax(i + l, base_c + ll0a[l & 3] + match_price(l, k), N, l, N.rep[k], k);
+        for (u32 l = MIN_MATCH; l <= rl[k]; l = next_len(l, rl[k], full)) relax(i + l, base_c + ll0a[l & 3] + match_price(l, k), N, l, N.rep[k], k);
       }
       // special offsets: rep3 and rep0/rep1 +- 1..3
       const u16 c16 = (u16)load16(cur);
@@ -466,7 +478,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
         if (off > a || off == N.rep[0] || off == N.rep[1] || off == N.rep[2]) continue;
         if (load16(cur - off) != c16) continue;
         u32 len = match_len(cur, cur - off, maxl);
-        for (u32 l = MIN_MATCH; l <= len; l++)
+        for (u32 l = MIN_MATCH; l <= len; l = next_len(l, len, full))
           relax(i + l, base_c + ll0a[l & 3] + match_price(l, 3) + P.off[omap[std::min<u32>(l - MIN_MATCH, 3)]][OFF_SLOTS + sp], N, l, off, 4 + sp);
       }
       u32 prev = MIN_MATCH - 1;
@@ -476,7 +488,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
         if (off == N.rep[0] || off == N.rep[1] || off == N.rep[2]) { prev = lc; continue; }
         u32 lmin = off > t3 ? 4 : off > t2 ? 3 : 2;
         float op[4]; for (u32 c = 0; c < 4; c++) op[c] = off_price(off, c);
-        for (u32 l = std::max(prev + 1, lmin); l <= lc; l++)
+        for (u32 l = std::max(prev + 1, lmin); l <= lc; l = next_len(l, lc, full))
           relax(i + l, base_c + ll0a[l & 3] + match_price(l, 3) + op[std::min<u32>(l - MIN_MATCH, 3)], N, l, off, 3);
         prev = lc;
       }
@@ -506,6 +518,7 @@ typedef u32 Ev;
 static double g_bits[8];  // lit, ll, mlk, off, align, len-extra, off-extra
 static u64 g_kinds[20];
 static u64 g_tables[8];
+static u64 g_hdr[8];  // header bits: type maps, lit map, lit tables, ll, mlk, off, align
 
 static void cumul(const u16* f, int n, u16* cum) { u32 c = 0; for (int i = 0; i < n; i++) { cum[i] = (u16)c; c += f[i]; } }
 
@@ -581,30 +594,40 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   for (int i = NUM_STREAMS - 1; i >= 0; i--) { *--ptr = (u16)(x[i] >> 16); *--ptr = (u16)x[i]; }
   size_t rb = (w.data() + w.size() - ptr) * 2;
   // header
-  BitWriter hw;
-  hw.put(lg, 5);
-  hw.put(M.nlt - 1, 4); write_map(hw, M.ltype, M.nch, M.nlt);
-  hw.put(M.nct - 1, 4); write_map(hw, M.ctype, M.nch, M.nct);
-  hw.put(M.ndt - 1, 4); write_map(hw, M.dtype, M.nch, M.ndt);
-  u32 nmap = 0; for (int t = 0; t < M.nlt; t++) { hw.put(M.lmode[t], 4); nmap += lit_mode(M.lmode[t]).nctx; }
-  hw.put(M.ncl - 1, 6); write_map(hw, M.litmap, (int)nmap, M.ncl);
-  for (int c = 0; c < M.ncl; c++) write_table(hw, M.lit[c], 256);
-  hw.put(M.nll - 1, 3); write_map(hw, M.llmap, M.nct * LL_NCTX, M.nll);
-  for (int c = 0; c < M.nll; c++) write_table(hw, M.ll[c], LL_SYMS);
-  hw.put(M.nmk - 1, 4); write_map(hw, M.mlkmap, M.nct * MLK_NCTX, M.nmk);
-  for (int c = 0; c < M.nmk; c++) write_table(hw, M.mlk[c], MLK_SYMS);
-  hw.put(M.nof - 1, 4); write_map(hw, M.offmap, M.ndt * OFF_NCTX, M.nof);
-  for (int c = 0; c < M.nof; c++) write_table(hw, M.off[c], OFF_SYMS);
-  hw.put(M.nal, 3); if (M.nal) write_map(hw, M.almap, M.ndt, M.nal);
-  for (int c = 0; c < M.nal; c++) write_table(hw, M.align[c], ALIGN_SYMS);
-  hw.flush();
+  RcEnc hw; MapModel mm[8]; TabModel tml, tmll, tmmk, tmof, tmal;
+  auto hbits = [&]() { return (u64)hw.out.size() * 8; }; u64 h0 = 0;
+#define HSTAT(k) do { u64 h1 = hbits(); g_hdr[k] += h1 - h0; h0 = h1; } while (0)
+  hw.direct(lg, 5);
+  hw.direct(M.nlt - 1, 4); write_map(hw, mm[0], M.ltype, M.nch, M.nlt);
+  hw.direct(M.nct - 1, 4); write_map(hw, mm[1], M.ctype, M.nch, M.nct);
+  hw.direct(M.ndt - 1, 4); write_map(hw, mm[2], M.dtype, M.nch, M.ndt);
+  HSTAT(0);
+  u32 nmap = 0; for (int t = 0; t < M.nlt; t++) { hw.direct(M.lmode[t], 4); nmap += lit_mode(M.lmode[t]).nctx; }
+  hw.direct(M.ncl - 1, 6); write_map(hw, mm[3], M.litmap, (int)nmap, M.ncl);
+  HSTAT(1);
+  for (int c = 0; c < M.ncl; c++) write_table(hw, tml, M.lit[c], 256);
+  HSTAT(2);
+  hw.direct(M.nll - 1, 3); write_map(hw, mm[4], M.llmap, M.nct * LL_NCTX, M.nll);
+  for (int c = 0; c < M.nll; c++) write_table(hw, tmll, M.ll[c], LL_SYMS);
+  HSTAT(3);
+  hw.direct(M.nmk - 1, 4); write_map(hw, mm[5], M.mlkmap, M.nct * MLK_NCTX, M.nmk);
+  for (int c = 0; c < M.nmk; c++) write_table(hw, tmmk, M.mlk[c], MLK_SYMS);
+  HSTAT(4);
+  hw.direct(M.nof - 1, 4); write_map(hw, mm[6], M.offmap, M.ndt * OFF_NCTX, M.nof);
+  for (int c = 0; c < M.nof; c++) write_table(hw, tmof, M.off[c], OFF_SYMS);
+  HSTAT(5);
+  hw.direct(M.nal, 3); if (M.nal) write_map(hw, mm[7], M.almap, M.ndt, M.nal);
+  for (int c = 0; c < M.nal; c++) write_table(hw, tmal, M.align[c], ALIGN_SYMS);
+  hw.finish();
+  HSTAT(6);
+#undef HSTAT
   g_tables[0] += M.ncl; g_tables[1] += M.nll; g_tables[2] += M.nmk; g_tables[3] += M.nof; g_tables[4] += M.nlt; g_tables[5] += M.nct; g_tables[6] += M.ndt; g_tables[7]++;
   put_varint(out, bn); out.push_back(1);
-  put_varint(out, seqs.size()); put_varint(out, hw.buf.size()); put_varint(out, rb); put_varint(out, bits.buf.size());
-  out.insert(out.end(), hw.buf.begin(), hw.buf.end());
+  put_varint(out, seqs.size()); put_varint(out, hw.out.size()); put_varint(out, rb); put_varint(out, bits.buf.size());
+  out.insert(out.end(), hw.out.begin(), hw.out.end());
   out.insert(out.end(), (const u8*)ptr, (const u8*)ptr + rb);
   out.insert(out.end(), bits.buf.begin(), bits.buf.end());
-  if (hdr_bytes) *hdr_bytes += hw.buf.size();
+  if (hdr_bytes) *hdr_bytes += hw.out.size();
 }
 
 // Streaming compressor. Holds one window of history plus the block being coded and some lookahead,
@@ -629,7 +652,7 @@ bool compress(FILE* fin, u64 n, FILE* fout, const Params& prm, u64* out_size) {
     return got == want;
   };
   if (!fill()) return false;
-  std::vector<u8> out = {'G', 'T', '0', 5};
+  std::vector<u8> out = {'G', 'T', '0', 6};
   put_varint(out, n);
   out.push_back((u8)ilog2(mf.W)); out.push_back((u8)prm.lgblock);
   u64 total_out = 0;
@@ -718,6 +741,7 @@ bool compress(FILE* fin, u64 n, FILE* fout, const Params& prm, u64* out_size) {
     fprintf(stderr, "  stored %zu  hdr %zu B  seqs %zu\n", stored, hdr_bytes, nseq_tot);
     double nb = (double)std::max<u64>(1, g_tables[7]);
     fprintf(stderr, "avg/block: lit tables %.1f ll %.1f mlk %.1f off %.1f | types lit %.1f cmd %.1f dist %.1f\n", g_tables[0] / nb, g_tables[1] / nb, g_tables[2] / nb, g_tables[3] / nb, g_tables[4] / nb, g_tables[5] / nb, g_tables[6] / nb);
+    fprintf(stderr, "header bytes: type-maps %llu lit-map %llu lit-tables %llu ll %llu mlk %llu off %llu align %llu\n", (unsigned long long)g_hdr[0] / 8, (unsigned long long)g_hdr[1] / 8, (unsigned long long)g_hdr[2] / 8, (unsigned long long)g_hdr[3] / 8, (unsigned long long)g_hdr[4] / 8, (unsigned long long)g_hdr[5] / 8, (unsigned long long)g_hdr[6] / 8);
     fprintf(stderr, "bytes: lit %.0f ll %.0f mlk %.0f off %.0f align %.0f len-extra %.0f off-extra %.0f\n", g_bits[0] / 8, g_bits[1] / 8, g_bits[2] / 8, g_bits[3] / 8, g_bits[4] / 8, g_bits[5] / 8, g_bits[6] / 8);
     fprintf(stderr, "kinds: rep0 %llu rep1 %llu rep2 %llu new %llu rep3 %llu near0", (unsigned long long)g_kinds[0], (unsigned long long)g_kinds[1], (unsigned long long)g_kinds[2], (unsigned long long)g_kinds[3], (unsigned long long)g_kinds[4]);
     u64 a = 0, b = 0; for (int i = 5; i < 11; i++) a += g_kinds[i]; for (int i = 11; i < 17; i++) b += g_kinds[i];

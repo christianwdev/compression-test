@@ -94,16 +94,36 @@ static inline u64 get_varint(const u8*& p) {
 
 // ---- frequency tables
 void normalize_freqs(const u32* cnt, int n, u16* f, int bits);
-void write_table(BitWriter& bw, const u16* f, int n);
-void read_table(BitReader& br, u16* f, int n);
-void write_map(BitWriter& bw, const u8* map, int nctx, int ncl);
-void read_map(BitReader& br, u8* map, int nctx, int ncl);
+// tables and maps are stored in block headers with a small adaptive binary range coder
+struct RcEnc {
+  u64 low = 0; u32 range = 0xffffffffu; u8 cache = 0; u64 pending = 1; std::vector<u8> out;
+  void shift_low();
+  void bit(u16& p, int b);
+  void direct(u32 v, int nb);
+  void finish();
+};
+struct RcDec {
+  u32 range = 0xffffffffu, code = 0; const u8* p = nullptr;
+  void init(const u8* s);
+  int bit(u16& p);
+  u32 direct(int nb);
+};
+// Probability state for coding the frequency tables of one alphabet (shared by its tables in a block).
+struct TabModel {
+  u16 cls[3][16][16]; u16 top[16][2]; u16 prev_cls[256]; bool have_prev;
+  TabModel();
+};
+void write_table(RcEnc& rc, TabModel& tm, const u16* f, int n);
+void read_table(RcDec& rc, TabModel& tm, u16* f, int n);
+struct MapModel { u16 same[2]; MapModel() { same[0] = same[1] = 1024; } };
+void write_map(RcEnc& rc, MapModel& mm, const u8* map, int nctx, int ncl);
+void read_map(RcDec& rc, MapModel& mm, u8* map, int nctx, int ncl);
 
 struct Params {
   int lgwin = 24;      // window = 1<<lgwin
   int lgblock = 21;    // block size
   int depth = 64;      // matchfinder tree depth
-  int nice = 128;      // "good enough" match length
+  int nice = 273;      // "good enough" match length
   int passes = 3;      // optimal-parse iterations per block
   int maxcl = 32;      // max literal clusters
   int hashbits = 20;
@@ -114,6 +134,7 @@ struct Params {
   int smooth = 0;      // smoothed prices for symbols a table has not seen
   double unseen_cap = 14.0;
   int rankslots = 32;  // contexts kept separate when ranking literal modes for a type
+  int fulllen = 1 << 20; // match lengths up to this are all tried by the parser; longer ones sparsely
   int lgsub = 20;      // match-storage / price-refinement unit inside a block
   int lgseg = 18;      // optimal-parse segment size
   int far2 = 1 << 8;   // max offset for which a new length-2 match is considered
