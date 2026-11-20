@@ -18,13 +18,16 @@ enum { MIN_MATCH = 2, MAX_MATCH = 65537, PAD = 16 };
 enum { LL_SYMS = 56, MLC_SYMS = 54, MLK_SYMS = 4 * MLC_SYMS, OFF_SLOTS = 60, NUM_SPECIAL = 13, OFF_SYMS = OFF_SLOTS + NUM_SPECIAL, ALIGN_SYMS = 16 };
 // rANS states: two alternate over literals; literal-run, match (plus low offset bits) and offset
 // symbols each have their own, so their decode chains overlap.
-enum { NUM_STREAMS = 5, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 10, NUM_REPS = 4 };
+enum { NUM_STREAMS = 5, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 12, NUM_REPS = 4 };
 // Sequence kinds: 0..2 = rep0..rep2, 3 = new offset (slot coded), 4 = rep3, 5..16 = rep0/rep1 +- 1..3.
 // Kinds >= 3 are signalled as kind 3 in the MLK symbol; the OFF symbol then selects slot or special.
 static const int NEAR_DELTA[6] = {-1, 1, -2, 2, -3, 3};
 // Contexts per command type: literal-run symbol by position alignment; match symbol by alignment
 // of the match start and by the literal run length.
-enum { LL_NCTX = 4, MLK_LLCTX = 12, MLK_NCTX = 4 * MLK_LLCTX, OFF_LENCTX = 4, OFF_NCTX = 4 * OFF_LENCTX, NT = 16, MAXCH = 4096, LL_MAXCL = 8, MLK_MAXCL = 16, OFF_MAXCL = 16, AL_MAXCL = 4 };
+// A block has a column period P (4 unless the data shows fixed-width records of another size);
+// col = file position mod P is part of the context of the literal-run, match and offset symbols
+// and of some literal modes. Arrays are sized for PMAX; a block uses P columns.
+enum { PMAX = 32, MLK_LLCTX = 12, OFF_LENCTX = 4, LL_MAXCTX = PMAX, MLK_MAXCTX = PMAX * MLK_LLCTX, OFF_MAXCTX = PMAX * OFF_LENCTX, NT = 16, MAXCH = 4096, LL_MAXCL = 8, MLK_MAXCL = 16, OFF_MAXCL = 16, AL_MAXCL = 4 };
 static const u8 MLK_CTX_LUT[32] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10};
 static inline u32 mlk_ctx(u32 ll) {  // context for the match symbol from the literal run length
   return ll < 32 ? MLK_CTX_LUT[ll] : 11;
@@ -53,10 +56,10 @@ static inline void off_code(u32 v, u32& sym, u32& nb, u32& ex) {  // v = dist - 
 }
 
 // ---- literal context modes
-// The context of a literal is A[prev byte] + B[match byte] + C[byte before prev] + D[pos & 3], where
+// The context of a literal is A[prev byte] + B[match byte] + C[byte before prev] + D[column], where
 // the match byte is the byte at the most recent offset. A mode is a choice of those four tables plus
 // whether the literal is coded as (literal - match byte). Each literal type of a block has a mode.
-struct LitMode { u16 A[256], B[256], C[256], D[4]; u16 nctx; u8 sub; };
+struct LitMode { u16 A[256], B[256], C[256], D[PMAX]; u16 nctx; u8 sub; };
 const LitMode& lit_mode(int m);
 static inline u32 byte_class(u8 c) {  // coarse class of a byte, used for second-order contexts
   if (c >= 0x80) return 3;
@@ -133,6 +136,7 @@ struct Params {
   int modemask = 703;    // enabled literal modes
   double hdr_nz = 8.0, hdr_base = 32.0;  // table cost model used when clustering: base + per used symbol
   double align_gain = 0.985;  // model low offset bits only if that costs less than this share of raw
+  int period = 0;      // 0: detect the column period per block; otherwise force it (1..32)
   int posctx = 7;      // bit 0/1/2: allow position contexts for literal-run / match / offset symbols
   int coarse = 0;      // 1: allow coarse frequency tables (tested: no net gain, off by default)
   int smooth = 0;      // smoothed prices for symbols a table has not seen

@@ -75,15 +75,26 @@ Baselines on this machine (Silesia total, bytes):
     +0.04% worse on the test set overall (small wins on text, losses elsewhere). Kept in the
     format but off by default.
 
+16. Column period per block: the encoder detects the period P (1..32) at which byte values depend
+    most on position mod P and uses position mod P in the contexts of literal-run, match and
+    offset symbols and the delta literal mode (previously always pos & 3). The decoder has a
+    mask path for P = 4 and a division path otherwise. Two extra column literal modes were
+    tried and left disabled (no gain).
+    Full corpus (results/gt-v11): **48,233,730 bytes, 2.69% smaller than brotli -q 11**
+    (`sao` -7.96%, `mozilla` -1.99%, `samba` -0.98%). Compress 0.89 MB/s (2.2x), decompress
+    258 MB/s (1.10x), memory 221 MB / 25 MB. Smaller than brotli on 11 of 12 files; `xml` is
+    +0.20%. Decode slower than brotli only on `webster` (0.95x) and `nci` (0.99x).
+
 ## Next ideas, in order
 
-1. Column contexts for fixed-width records (generalises the pos & 3 contexts; targets `sao`).
-2. Window ring without the slide copy, to bring decompress memory from 25 MB to about 21 MB.
+1. Window ring without the slide copy (decompress memory 25 MB -> about 21 MB, and faster decode
+   on files larger than the window such as `webster`).
+2. `xml`: deeper match search or cheaper headers to close the last 0.2%.
 
 ## Open items
 
-- `xml` and `samba` still marginally larger than brotli (header size, deeper match search).
-- Text decode speed on `reymont` / `webster`.
+- `xml` still 0.20% larger than brotli.
+- Decode speed on `webster` (0.95x).
 - Decompress memory is 25 MB vs brotli's 20 MB on files larger than the window.
 - Compress memory on small files is 10-35% above brotli's (peak is below).
 - Literal mode selection still interacts with the parse (up to ~1% on some files).

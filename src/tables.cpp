@@ -204,17 +204,19 @@ const LitMode& lit_mode(int m) {
         switch (mode) {
           case 1: L.A[x] = x; L.nctx = 256; break;                       // previous byte
           case 2: L.B[x] = x; L.nctx = 256; break;                       // match byte
-          case 3: L.sub = 1; L.nctx = 4; break;                          // position, delta coded
+          case 3: L.sub = 1; L.nctx = PMAX; break;                          // position, delta coded
           case 4: L.A[x] = x; L.sub = 1; L.nctx = 256; break;            // previous byte, delta coded
           case 5: L.A[x] = x >> 4; L.B[x] = x & 0xf0; L.nctx = 256; break;
           case 6: L.A[x] = x >> 2; L.nctx = 256; break;                  // position + previous byte
           case 7: L.A[x] = x << 2; L.C[x] = byte_class((u8)x); L.nctx = 1024; break;
           case 8: L.B[x] = x << 2; L.A[x] = byte_class((u8)x); L.nctx = 1024; break;
           case 9: L.B[x] = (x >> 3) << 5; L.A[x] = x >> 3; L.nctx = 1024; break;
+          case 10: L.nctx = PMAX; break;                                 // column
+          case 11: L.A[x] = x >> 3; L.nctx = PMAX * 32; break;           // column + previous byte
           default: break;
         }
       }
-      for (int k = 0; k < 4; k++) L.D[k] = mode == 3 ? k : mode == 6 ? k << 6 : 0;
+      for (int k = 0; k < PMAX; k++) L.D[k] = mode == 3 || mode == 10 ? k : mode == 11 ? k << 5 : mode == 6 ? (k & 3) << 6 : 0;
     }
     g_modes_init = true;
   }

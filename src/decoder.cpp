@@ -7,10 +7,11 @@ namespace gt {
 struct DecTables {
   u32 lit[MAXCL][1 << LIT_BITS];
   u32 ll[LL_MAXCL][1 << LL_BITS], mlk[MLK_MAXCL][1 << MLK_BITS], off[OFF_MAXCL][1 << OFF_BITS], align[AL_MAXCL][1 << AL_BITS];
-  u8 litmap[NT * MAXCTX], llmap[NT * LL_NCTX], mlkmap[NT * MLK_NCTX], offmap[NT * OFF_NCTX], almap[NT];
+  u8 litmap[NT * MAXCTX], llmap[NT * LL_MAXCTX], mlkmap[NT * MLK_MAXCTX], offmap[NT * OFF_MAXCTX], almap[NT];
   u8 ltype[MAXCH], ctype[MAXCH], dtype[MAXCH];
   u8 lmode[NT]; u32 lbase[NT];
   int lgchunk; bool rawalign;
+  u32 period, bias;  // column of buffer position x is (x + bias) mod period
 };
 
 // Returns false if the frequencies do not sum to the table size (corrupt input).
@@ -52,6 +53,8 @@ static const u8 SMALL_OFF_PERIOD[16] = {0, 16, 16, 18, 16, 20, 18, 21, 16, 18, 2
 // __builtin_memcpy: plain memcpy here becomes a checked library call under _FORTIFY_SOURCE
 static inline void copy16(u8* d, const u8* s) { u64 a = load64(s), b = load64(s + 8); __builtin_memcpy(d, &a, 8); __builtin_memcpy(d + 8, &b, 8); }
 
+// P4: the block's period is 4, so columns are a mask instead of a division.
+template <bool P4>
 static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 end, u32 nseq, u32* reps,
                         const u8* rp, const u8* bitp) {
   u32 xa = load32(rp), xb = load32(rp + 4), x2 = load32(rp + 8), x3 = load32(rp + 12), x4 = load32(rp + 16); rp += 4 * NUM_STREAMS;
@@ -63,19 +66,21 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
   const u8* llm = T.llmap; const u32* alt = T.align[0];
   const LitMode* lm = &lit_mode(0); u32 submask = 0;
   const bool rawalign = T.rawalign;
+  const u32 PER = P4 ? 4 : T.period, bias = T.bias;
+#define COL(x) (P4 ? ((u32)(x) + bias) & 3 : ((u32)(x) + bias) % PER)
 #define UPDATE_CHUNK() do { if (pos < end) { u32 ch = (pos - bs) >> lg; chunk_end = bs + ((ch + 1) << lg); \
     u32 lt_ = T.ltype[ch]; lm = &lit_mode(T.lmode[lt_]); submask = lm->sub ? 0xff : 0; lmap = T.litmap + T.lbase[lt_]; \
-    llm = T.llmap + T.ctype[ch] * LL_NCTX; \
-    mmap = T.mlkmap + T.ctype[ch] * MLK_NCTX; omap = T.offmap + T.dtype[ch] * OFF_NCTX; alt = T.align[T.almap[T.dtype[ch]]]; } } while (0)
+    llm = T.llmap + T.ctype[ch] * PER; \
+    mmap = T.mlkmap + T.ctype[ch] * PER * MLK_LLCTX; omap = T.offmap + T.dtype[ch] * PER * OFF_LENCTX; alt = T.align[T.almap[T.dtype[ch]]]; } } while (0)
 #define LIT1(X) do { u32 mb_ = *(q - r0); \
-    const u32* t_ = T.lit[lmap[lm->A[p1] + lm->B[mb_] + lm->C[p2] + lm->D[(size_t)(q - base) & 3]]]; \
+    const u32* t_ = T.lit[lmap[lm->A[p1] + lm->B[mb_] + lm->C[p2] + lm->D[COL(q - base)]]]; \
     u32 sym_; RANS_DEC(X, t_, sym_, LIT_BITS); p2 = p1; p1 = (u8)(sym_ + (mb_ & submask)); *q++ = (u8)p1; } while (0)
   for (u32 s = 0; s <= nseq; s++) {
     u32 ll;
     if (pos >= chunk_end) UPDATE_CHUNK();
     br.refill();
     if (s < nseq) {
-      u32 sym; RANS_DEC(x2, T.ll[llm[pos & 3]], sym, LL_BITS);
+      u32 sym; RANS_DEC(x2, T.ll[llm[COL(pos)]], sym, LL_BITS);
       u32 nb = LL_NB[sym]; ll = LL_BASE[sym] + (u32)(br.acc & ((1ull << nb) - 1)); br.acc >>= nb; br.n -= nb;
     } else ll = end - pos;
     const u32 ll0 = ll;
@@ -91,14 +96,15 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
       } while (ll);
     }
     if (s == nseq) break;
-    u32 sym; RANS_DEC(x3, T.mlk[mmap[(pos & 3) * MLK_LLCTX + mlk_ctx(ll0)]], sym, MLK_BITS);
+    const u32 mcol = COL(pos);
+    u32 sym; RANS_DEC(x3, T.mlk[mmap[mcol * MLK_LLCTX + mlk_ctx(ll0)]], sym, MLK_BITS);
     u32 kind = MLK_KIND[sym], mc = MLK_MC[sym];
     u32 mnb = ML_NB[mc];
     u32 ml = MIN_MATCH + ML_BASE[mc] + (u32)(br.acc & ((1ull << mnb) - 1)); br.acc >>= mnb; br.n -= mnb;
     u32 off;
     if (kind == 3) {
       u32 c = ml - MIN_MATCH; if (c > 3) c = 3;
-      u32 slot; RANS_DEC(x4, T.off[omap[(pos & 3) * OFF_LENCTX + c]], slot, OFF_BITS);
+      u32 slot; RANS_DEC(x4, T.off[omap[mcol * OFF_LENCTX + c]], slot, OFF_BITS);
       if (slot < OFF_SLOTS) {
         u32 v;
         if (slot < 4) v = slot;
@@ -129,6 +135,7 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
   reps[0] = r0; reps[1] = r1; reps[2] = r2; reps[3] = r3;
 #undef UPDATE_CHUNK
 #undef LIT1
+#undef COL
 }
 
 // Buffered input: need(n) returns a pointer to n contiguous unread bytes (plus 8 readable bytes of
@@ -159,7 +166,7 @@ bool decompress(FILE* fin, FILE* fout) {
   init_static();
   In in(fin);
   const u8* p = in.need(6);
-  if (!p || memcmp(p, "GT0\7", 4)) return false;
+  if (!p || memcmp(p, "GT0\010", 4)) return false;
   in.pos += 4;
   size_t av = in.avail_hint(); if (av < 3) return false;
   p = in.buf.data() + in.pos; const u8* p0 = p;
@@ -201,6 +208,8 @@ bool decompress(FILE* fin, FILE* fout) {
       p = in.need((size_t)hdr + rb + bb); if (!p) { ok = false; break; }
       RcDec br; br.init(p); MapModel mm[8]; TabModel tml, tmll, tmmk, tmof, tmal;
       int lg = (int)br.direct(5); T->lgchunk = lg;
+      const int PER = (int)br.direct(6); if (PER < 1 || PER > PMAX) { ok = false; break; }
+      T->period = (u32)PER; T->bias = (u32)(done % (u64)PER) + (u32)PER - (pos % (u32)PER);
       int nch = (int)((raw + (1u << lg) - 1) >> lg);
       if (nch > MAXCH) { ok = false; break; }
       int nlt = (int)br.direct(4) + 1; read_map(br, mm[0], T->ltype, nch, nlt);
@@ -216,11 +225,11 @@ bool decompress(FILE* fin, FILE* fout) {
       read_map(br, mm[3], T->litmap, (int)nmap, ncl);
       u16 f[256];
       for (int c = 0; c < ncl; c++) { if (!read_table(br, tml, f, 256, LIT_BITS) || !build_dec(f, 256, T->lit[c], LIT_BITS)) ok = false; }
-      int nll = (int)br.direct(3) + 1; read_map(br, mm[4], T->llmap, nct * LL_NCTX, nll);
+      int nll = (int)br.direct(3) + 1; read_map(br, mm[4], T->llmap, nct * PER, nll);
       for (int c = 0; c < nll; c++) { if (!read_table(br, tmll, f, LL_SYMS, LL_BITS) || !build_dec(f, LL_SYMS, T->ll[c], LL_BITS)) ok = false; }
-      int nmk = (int)br.direct(4) + 1; read_map(br, mm[5], T->mlkmap, nct * MLK_NCTX, nmk);
+      int nmk = (int)br.direct(4) + 1; read_map(br, mm[5], T->mlkmap, nct * PER * MLK_LLCTX, nmk);
       for (int c = 0; c < nmk; c++) { if (!read_table(br, tmmk, f, MLK_SYMS, MLK_BITS) || !build_dec(f, MLK_SYMS, T->mlk[c], MLK_BITS)) ok = false; }
-      int nof = (int)br.direct(4) + 1; read_map(br, mm[6], T->offmap, ndt * OFF_NCTX, nof);
+      int nof = (int)br.direct(4) + 1; read_map(br, mm[6], T->offmap, ndt * PER * OFF_LENCTX, nof);
       for (int c = 0; c < nof; c++) { if (!read_table(br, tmof, f, OFF_SYMS, OFF_BITS) || !build_dec(f, OFF_SYMS, T->off[c], OFF_BITS)) ok = false; }
       int nal = (int)br.direct(3); T->rawalign = nal == 0;  // 0: low offset bits are stored raw
       if (nal > AL_MAXCL) { ok = false; break; }
@@ -229,7 +238,8 @@ bool decompress(FILE* fin, FILE* fout) {
       if (!ok) break;
       const u8* rp = p + hdr; const u8* bitp = rp + rb;
       u32 end = pos + raw;
-      decode_seqs(*T, base, pos, end, nseq, reps, rp, bitp);
+      if (PER == 4) decode_seqs<true>(*T, base, pos, end, nseq, reps, rp, bitp);
+      else decode_seqs<false>(*T, base, pos, end, nseq, reps, rp, bitp);
       in.pos += (size_t)hdr + rb + bb;
     }
     if (fwrite(base + pos, 1, raw, fout) != raw) { ok = false; break; }
