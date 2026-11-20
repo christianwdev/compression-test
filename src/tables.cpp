@@ -1,0 +1,64 @@
+#include "common.h"
+namespace gt {
+
+void normalize_freqs(const u32* cnt, int n, u16* f) {
+  u64 tot = 0; int nz = 0;
+  for (int i = 0; i < n; i++) { tot += cnt[i]; nz += cnt[i] != 0; }
+  if (tot == 0) { memset(f, 0, n * sizeof(u16)); f[0] = SCALE - 1; f[1] = 1; return; }
+  int sum = 0;
+  for (int i = 0; i < n; i++) {
+    if (!cnt[i]) { f[i] = 0; continue; }
+    u64 v = ((u64)cnt[i] * SCALE + tot / 2) / tot;
+    if (v < 1) v = 1; if (v > SCALE - 1) v = SCALE - 1;
+    f[i] = (u16)v; sum += (int)v;
+  }
+  int diff = SCALE - sum;
+  while (diff > 0) {
+    int best = -1; double bg = -1;
+    for (int i = 0; i < n; i++) if (cnt[i] && f[i] < SCALE - 1) {
+      double g = cnt[i] * log2((f[i] + 1.0) / f[i]);
+      if (g > bg) { bg = g; best = i; }
+    }
+    if (best < 0) { for (int i = 0; i < n; i++) if (!f[i]) { best = i; break; } }
+    f[best]++; diff--;
+  }
+  while (diff < 0) {
+    int best = -1; double bl = 1e300;
+    for (int i = 0; i < n; i++) if (f[i] > 1) {
+      double l = cnt[i] * log2(f[i] / (f[i] - 1.0));
+      if (l < bl) { bl = l; best = i; }
+    }
+    f[best]--; diff++;
+  }
+}
+
+// class (4 bits): 0 = zero, 1..12 = bit length of freq (+ len-1 mantissa bits),
+// 13 = zero run 2..9 (3 bits), 14 = zero run 10..265 (8 bits)
+void write_table(BitWriter& bw, const u16* f, int n) {
+  int i = 0;
+  while (i < n) {
+    if (f[i] == 0) {
+      int run = 1; while (i + run < n && f[i + run] == 0 && run < 265) run++;
+      if (run == 1) bw.put(0, 4);
+      else if (run < 10) { bw.put(13, 4); bw.put(run - 2, 3); }
+      else { bw.put(14, 4); bw.put(run - 10, 8); }
+      i += run;
+    } else {
+      u32 c = ilog2(f[i]) + 1;
+      bw.put(c, 4); if (c > 1) bw.put(f[i] - (1u << (c - 1)), c - 1);
+      i++;
+    }
+  }
+}
+void read_table(BitReader& br, u16* f, int n) {
+  int i = 0;
+  while (i < n) {
+    u32 c = br.get(4);
+    if (c == 0) f[i++] = 0;
+    else if (c == 13) { int run = br.get(3) + 2; while (run-- && i < n) f[i++] = 0; }
+    else if (c == 14) { int run = br.get(8) + 10; while (run-- && i < n) f[i++] = 0; }
+    else f[i++] = (u16)((c > 1 ? br.get(c - 1) : 0) + (1u << (c - 1)));
+  }
+}
+
+}  // namespace gt
