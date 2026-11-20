@@ -61,4 +61,26 @@ void read_table(BitReader& br, u16* f, int n) {
   }
 }
 
+
+// context map: runs of (cluster id, run length); run length = 4-bit bit count + mantissa
+void write_map(BitWriter& bw, const u8* map, int nctx, int ncl) {
+  int mb = 0; while ((1 << mb) < ncl) mb++;
+  int i = 0;
+  while (i < nctx) {
+    int run = 1; while (i + run < nctx && map[i + run] == map[i]) run++;
+    bw.put(map[i], mb);
+    u32 c = ilog2(run) + 1; bw.put(c, 4); if (c > 1) bw.put(run - (1u << (c - 1)), c - 1);
+    i += run;
+  }
+}
+void read_map(BitReader& br, u8* map, int nctx, int ncl) {
+  int mb = 0; while ((1 << mb) < ncl) mb++;
+  int i = 0;
+  while (i < nctx) {
+    u8 id = (u8)br.get(mb); u32 c = br.get(4);
+    int run = (int)((c > 1 ? br.get(c - 1) : 0) + (1u << (c - 1)));
+    while (run-- && i < nctx) map[i++] = id;
+  }
+}
+
 }  // namespace gt

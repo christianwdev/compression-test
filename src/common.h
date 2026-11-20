@@ -14,8 +14,15 @@ namespace gt {
 
 enum { SCALE_BITS = 12, SCALE = 1 << SCALE_BITS, RANS_L = 1 << 16 };
 enum { MIN_MATCH = 2, MAX_MATCH = 65537, PAD = 16 };
-enum { LL_SYMS = 56, MLC_SYMS = 54, MLK_SYMS = 4 * MLC_SYMS, OFF_SYMS = 60, ALIGN_SYMS = 16 };
-enum { NUM_STREAMS = 4, MAXCTX = 256, MAXCL = 64, NUM_LITMODES = 7 };
+enum { LL_SYMS = 56, MLC_SYMS = 54, MLK_SYMS = 4 * MLC_SYMS, OFF_SLOTS = 60, NUM_SPECIAL = 13, OFF_SYMS = OFF_SLOTS + NUM_SPECIAL, ALIGN_SYMS = 16 };
+enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 8, NUM_REPS = 4 };
+// Sequence kinds: 0..2 = rep0..rep2, 3 = new offset (slot coded), 4 = rep3, 5..16 = rep0/rep1 +- 1..3.
+// Kinds >= 3 are signalled as kind 3 in the MLK symbol; the OFF symbol then selects slot or special.
+static const int NEAR_DELTA[6] = {-1, 1, -2, 2, -3, 3};
+enum { MLK_NCTX = 12, MLK_MAXCL = 6 };
+static inline u32 mlk_ctx(u32 ll) {  // context for the match symbol from the literal run length
+  return ll < 8 ? ll : ll < 12 ? 8 : ll < 16 ? 9 : ll < 32 ? 10 : 11;
+}
 
 static inline u32 ilog2(u32 v) { return 31 - __builtin_clz(v); }
 static inline u32 load32(const u8* p) { u32 v; memcpy(&v, p, 4); return v; }
@@ -40,9 +47,15 @@ static inline void off_code(u32 v, u32& sym, u32& nb, u32& ex) {  // v = dist - 
 }
 
 // ---- literal context modes
-static const int LIT_NCTX[NUM_LITMODES] = {1, 256, 256, 4, 256, 256, 256};
+static const int LIT_NCTX[NUM_LITMODES] = {1, 256, 256, 4, 256, 256, 256, 1024};
 static inline bool lit_sub(int mode) { return mode == 3 || mode == 4; }
-static inline u32 lit_ctx(int mode, u32 pos, u8 p1, u8 mb) {
+static inline u32 byte_class(u8 c) {  // coarse class of a byte, used for second-order contexts
+  if (c >= 0x80) return 3;
+  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return 2;
+  if (c >= 0x30) return 1;
+  return 0;
+}
+static inline u32 lit_ctx(int mode, u32 pos, u8 p1, u8 p2, u8 mb) {
   switch (mode) {
     case 0: return 0;
     case 1: return p1;
@@ -50,7 +63,8 @@ static inline u32 lit_ctx(int mode, u32 pos, u8 p1, u8 mb) {
     case 3: return pos & 3;
     case 4: return p1;
     case 5: return (p1 >> 4) | (mb & 0xf0);
-    default: return ((pos & 3) << 6) | (p1 >> 2);
+    case 6: return ((pos & 3) << 6) | (p1 >> 2);
+    default: return ((u32)p1 << 2) | byte_class(p2);
   }
 }
 
@@ -85,6 +99,8 @@ static inline u64 get_varint(const u8*& p) {
 void normalize_freqs(const u32* cnt, int n, u16* f);
 void write_table(BitWriter& bw, const u16* f, int n);
 void read_table(BitReader& br, u16* f, int n);
+void write_map(BitWriter& bw, const u8* map, int nctx, int ncl);
+void read_map(BitReader& br, u8* map, int nctx, int ncl);
 
 struct Params {
   int lgwin = 24;      // window = 1<<lgwin
@@ -94,6 +110,7 @@ struct Params {
   int passes = 2;      // optimal-parse iterations per block
   int maxcl = 32;      // max literal clusters
   int hashbits = 20;
+  int modemask = 0xff; // enabled literal modes
   int verbose = 0;
 };
 

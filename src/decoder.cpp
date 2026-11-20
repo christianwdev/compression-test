@@ -3,8 +3,8 @@ namespace gt {
 
 struct DecTables {
   u32 lit[MAXCL][SCALE];
-  u32 ll[SCALE], mlk[2][SCALE], off[4][SCALE], align[SCALE];
-  u8 map[MAXCTX];
+  u32 ll[SCALE], mlk[MLK_MAXCL][SCALE], off[4][SCALE], align[SCALE];
+  u8 map[MAXCTX]; u8 mlkmap[MLK_NCTX];
 };
 
 static void build_dec(const u16* f, int n, u32* tab) {
@@ -42,7 +42,7 @@ static void decode_seqs(const DecTables& T, u8* base, u32 pos, u32 end, u32 nseq
                         const u8* rp, const u8* bitp) {
   u32 x0 = load32(rp), x1 = load32(rp + 4), x2 = load32(rp + 8), x3 = load32(rp + 12); rp += 16;
   BitReader br; br.init(bitp);
-  u32 r0 = reps[0], r1 = reps[1], r2 = reps[2];
+  u32 r0 = reps[0], r1 = reps[1], r2 = reps[2], r3 = reps[3];
   u32 li = 0;
   for (u32 s = 0; s <= nseq; s++) {
     u32 ll;
@@ -52,28 +52,32 @@ static void decode_seqs(const DecTables& T, u8* base, u32 pos, u32 end, u32 nseq
     } else ll = end - pos;
     for (u32 k = 0; k < ll; k++) {
       const u8* q = base + pos; u8 p1 = *(q - 1), mb = *(q - r0);
-      const u32* t = T.lit[T.map[lit_ctx(MODE, pos, p1, mb)]];
+      const u32* t = T.lit[T.map[lit_ctx(MODE, pos, p1, *(q - 2), mb)]];
       u32 sym;
       if (li & 1) RANS_DEC(x1, t, sym); else RANS_DEC(x0, t, sym);
       li++;
       base[pos++] = lit_sub(MODE) ? (u8)(sym + mb) : (u8)sym;
     }
     if (s == nseq) break;
-    u32 sym; RANS_DEC(x3, T.mlk[ll != 0], sym);
+    u32 sym; RANS_DEC(x3, T.mlk[T.mlkmap[mlk_ctx(ll)]], sym);
     u32 kind = MLK_KIND[sym], mc = MLK_MC[sym];
     u32 ml = MIN_MATCH + ML_BASE[mc] + br.get(ML_NB[mc]);
     u32 off;
     if (kind == 3) {
       u32 c = ml - MIN_MATCH; if (c > 3) c = 3;
       u32 slot; RANS_DEC(x2, T.off[c], slot);
-      u32 v;
-      if (slot < 4) v = slot;
-      else {
-        u32 nb = (slot >> 1) - 1; v = (2 | (slot & 1)) << nb;
-        if (nb >= 4) { v += br.get(nb - 4) << 4; u32 a; RANS_DEC(x3, T.align, a); v += a; }
-        else v += br.get(nb);
-      }
-      off = v + 1; r2 = r1; r1 = r0; r0 = off;
+      if (slot < OFF_SLOTS) {
+        u32 v;
+        if (slot < 4) v = slot;
+        else {
+          u32 nb = (slot >> 1) - 1; v = (2 | (slot & 1)) << nb;
+          if (nb >= 4) { v += br.get(nb - 4) << 4; u32 a; RANS_DEC(x3, T.align, a); v += a; }
+          else v += br.get(nb);
+        }
+        off = v + 1;
+      } else if (slot == OFF_SLOTS) off = r3;
+      else { u32 idx = slot - OFF_SLOTS - 1; off = (idx < 6 ? r0 : r1) + NEAR_DELTA[idx % 6]; }
+      r3 = r2; r2 = r1; r1 = r0; r0 = off;
     } else if (kind == 0) off = r0;
     else if (kind == 1) { off = r1; r1 = r0; r0 = off; }
     else { off = r2; r2 = r1; r1 = r0; r0 = off; }
@@ -81,7 +85,7 @@ static void decode_seqs(const DecTables& T, u8* base, u32 pos, u32 end, u32 nseq
     for (u32 k = 0; k < ml; k++) d[k] = m[k];
     pos += ml;
   }
-  reps[0] = r0; reps[1] = r1; reps[2] = r2;
+  reps[0] = r0; reps[1] = r1; reps[2] = r2; reps[3] = r3;
 }
 
 bool decompress(const u8* in, size_t n, std::vector<u8>& out) {
@@ -92,7 +96,7 @@ bool decompress(const u8* in, size_t n, std::vector<u8>& out) {
   std::vector<u8> buf(total + PAD + 64, 0);
   u8* base = buf.data() + PAD;
   DecTables* T = new DecTables;
-  u32 reps[3] = {1, 2, 3};
+  u32 reps[NUM_REPS] = {1, 2, 3, 4};
   u64 pos = 0;
   while (pos < total) {
     u32 raw = (u32)get_varint(p);
@@ -103,12 +107,12 @@ bool decompress(const u8* in, size_t n, std::vector<u8>& out) {
     BitReader br; br.init(p);
     int mode = br.get(4), ncl = br.get(7);
     int nctx = LIT_NCTX[mode];
-    int mb = 0; while ((1 << mb) < ncl) mb++;
-    for (int i = 0; i < nctx; i++) T->map[i] = (u8)br.get(mb);
+    read_map(br, T->map, nctx, ncl);
     u16 f[256];
     for (int c = 0; c < ncl; c++) { read_table(br, f, 256); build_dec(f, 256, T->lit[c]); }
     read_table(br, f, LL_SYMS); build_dec(f, LL_SYMS, T->ll);
-    for (int c = 0; c < 2; c++) { read_table(br, f, MLK_SYMS); build_dec(f, MLK_SYMS, T->mlk[c]); }
+    int nmk = br.get(3) + 1; read_map(br, T->mlkmap, MLK_NCTX, nmk);
+    for (int c = 0; c < nmk; c++) { read_table(br, f, MLK_SYMS); build_dec(f, MLK_SYMS, T->mlk[c]); }
     for (int c = 0; c < 4; c++) { read_table(br, f, OFF_SYMS); build_dec(f, OFF_SYMS, T->off[c]); }
     read_table(br, f, ALIGN_SYMS); build_dec(f, ALIGN_SYMS, T->align);
     const u8* rp = p + hdr; const u8* bitp = rp + rb;
@@ -120,7 +124,8 @@ bool decompress(const u8* in, size_t n, std::vector<u8>& out) {
       case 3: decode_seqs<3>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
       case 4: decode_seqs<4>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
       case 5: decode_seqs<5>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
-      default: decode_seqs<6>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
+      case 6: decode_seqs<6>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
+      default: decode_seqs<7>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
     }
     p = bitp + bb; pos += raw;
   }
