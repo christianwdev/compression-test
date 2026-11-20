@@ -89,10 +89,16 @@ Baselines on this machine (Silesia total, bytes):
     from 25 MB to 30 MB and `samba` decoded 15% slower, because each mapping faults separately
     and without huge pages. Reverted.
 
-## Next ideas, in order
+18. `xml` (0.20% larger than brotli): a fourth parse pass (430,374) or a match-length limit of 512
+    (428,576) would beat brotli's 430,566, but each costs 20-40% compress time on every file for
+    about 0.01-0.03% overall. Not adopted.
 
-1. `xml`: deeper match search or cheaper headers to close the last 0.2%.
-2. Decode speed on `webster`.
+## Ideas not pursued
+
+- x86 call/jump address filter for executables (likely several percent on `mozilla` and
+  `ooffice`); left out as file-type specific.
+- Learned per-block context quantisers for literals in place of the fixed mode menu.
+- Keeping more than one arrival state per position in the optimal parse.
 
 ## Open items
 
