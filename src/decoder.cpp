@@ -7,7 +7,7 @@ namespace gt {
 struct DecTables {
   u32 lit[MAXCL][1 << LIT_BITS];
   u32 ll[LL_MAXCL][1 << LL_BITS], mlk[MLK_MAXCL][1 << MLK_BITS], off[OFF_MAXCL][1 << OFF_BITS], align[AL_MAXCL][1 << AL_BITS];
-  u8 litmap[NT * MAXCTX], llmap[NT], mlkmap[NT * MLK_NCTX], offmap[NT * 4], almap[NT];
+  u8 litmap[NT * MAXCTX], llmap[NT * LL_NCTX], mlkmap[NT * MLK_NCTX], offmap[NT * OFF_NCTX], almap[NT];
   u8 ltype[MAXCH], ctype[MAXCH], dtype[MAXCH];
   u8 lmode[NT]; u32 lbase[NT];
   int lgchunk; bool rawalign;
@@ -60,13 +60,13 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
   u32 pos = bs, chunk_end = bs;
   const int lg = T.lgchunk;
   const u8* lmap = T.litmap; const u8* mmap = T.mlkmap; const u8* omap = T.offmap;
-  const u32* llt = T.ll[0]; const u32* alt = T.align[0];
+  const u8* llm = T.llmap; const u32* alt = T.align[0];
   const LitMode* lm = &lit_mode(0); u32 submask = 0;
   const bool rawalign = T.rawalign;
 #define UPDATE_CHUNK() do { if (pos < end) { u32 ch = (pos - bs) >> lg; chunk_end = bs + ((ch + 1) << lg); \
     u32 lt_ = T.ltype[ch]; lm = &lit_mode(T.lmode[lt_]); submask = lm->sub ? 0xff : 0; lmap = T.litmap + T.lbase[lt_]; \
-    llt = T.ll[T.llmap[T.ctype[ch]]]; \
-    mmap = T.mlkmap + T.ctype[ch] * MLK_NCTX; omap = T.offmap + T.dtype[ch] * 4; alt = T.align[T.almap[T.dtype[ch]]]; } } while (0)
+    llm = T.llmap + T.ctype[ch] * LL_NCTX; \
+    mmap = T.mlkmap + T.ctype[ch] * MLK_NCTX; omap = T.offmap + T.dtype[ch] * OFF_NCTX; alt = T.align[T.almap[T.dtype[ch]]]; } } while (0)
 #define LIT1(X) do { u32 mb_ = *(q - r0); \
     const u32* t_ = T.lit[lmap[lm->A[p1] + lm->B[mb_] + lm->C[p2] + lm->D[(size_t)(q - base) & 3]]]; \
     u32 sym_; RANS_DEC(X, t_, sym_, LIT_BITS); p2 = p1; p1 = (u8)(sym_ + (mb_ & submask)); *q++ = (u8)p1; } while (0)
@@ -75,7 +75,7 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
     if (pos >= chunk_end) UPDATE_CHUNK();
     br.refill();
     if (s < nseq) {
-      u32 sym; RANS_DEC(x2, llt, sym, LL_BITS);
+      u32 sym; RANS_DEC(x2, T.ll[llm[pos & 3]], sym, LL_BITS);
       u32 nb = LL_NB[sym]; ll = LL_BASE[sym] + (u32)(br.acc & ((1ull << nb) - 1)); br.acc >>= nb; br.n -= nb;
     } else ll = end - pos;
     const u32 ll0 = ll;
@@ -91,14 +91,14 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
       } while (ll);
     }
     if (s == nseq) break;
-    u32 sym; RANS_DEC(x3, T.mlk[mmap[mlk_ctx(ll0)]], sym, MLK_BITS);
+    u32 sym; RANS_DEC(x3, T.mlk[mmap[(pos & 3) * MLK_LLCTX + mlk_ctx(ll0)]], sym, MLK_BITS);
     u32 kind = MLK_KIND[sym], mc = MLK_MC[sym];
     u32 mnb = ML_NB[mc];
     u32 ml = MIN_MATCH + ML_BASE[mc] + (u32)(br.acc & ((1ull << mnb) - 1)); br.acc >>= mnb; br.n -= mnb;
     u32 off;
     if (kind == 3) {
       u32 c = ml - MIN_MATCH; if (c > 3) c = 3;
-      u32 slot; RANS_DEC(x2, T.off[omap[c]], slot, OFF_BITS);
+      u32 slot; RANS_DEC(x2, T.off[omap[(pos & 3) * OFF_LENCTX + c]], slot, OFF_BITS);
       if (slot < OFF_SLOTS) {
         u32 v;
         if (slot < 4) v = slot;
@@ -216,11 +216,11 @@ bool decompress(FILE* fin, FILE* fout) {
       read_map(br, T->litmap, (int)nmap, ncl);
       u16 f[256];
       for (int c = 0; c < ncl; c++) { read_table(br, f, 256); if (!build_dec(f, 256, T->lit[c], LIT_BITS)) ok = false; }
-      int nll = br.get(3) + 1; read_map(br, T->llmap, nct, nll);
+      int nll = br.get(3) + 1; read_map(br, T->llmap, nct * LL_NCTX, nll);
       for (int c = 0; c < nll; c++) { read_table(br, f, LL_SYMS); if (!build_dec(f, LL_SYMS, T->ll[c], LL_BITS)) ok = false; }
       int nmk = br.get(4) + 1; read_map(br, T->mlkmap, nct * MLK_NCTX, nmk);
       for (int c = 0; c < nmk; c++) { read_table(br, f, MLK_SYMS); if (!build_dec(f, MLK_SYMS, T->mlk[c], MLK_BITS)) ok = false; }
-      int nof = br.get(4) + 1; read_map(br, T->offmap, ndt * 4, nof);
+      int nof = br.get(4) + 1; read_map(br, T->offmap, ndt * OFF_NCTX, nof);
       for (int c = 0; c < nof; c++) { read_table(br, f, OFF_SYMS); if (!build_dec(f, OFF_SYMS, T->off[c], OFF_BITS)) ok = false; }
       int nal = br.get(3); T->rawalign = nal == 0;  // 0: low offset bits are stored raw
       if (nal > AL_MAXCL) { ok = false; break; }

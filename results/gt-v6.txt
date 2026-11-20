@@ -7,3 +7,7 @@ osdb         10085684 ->    2770941   3.640x  c    0.95 MB/s  d   234.3 MB/s  cm
 reymont       6627202 ->    1305869   5.075x  c    0.76 MB/s  d   271.7 MB/s  cmem    121M dmem    19M  OK
 samba        21606400 ->    3775083   5.723x  c    1.11 MB/s  d   296.8 MB/s  cmem    217M dmem    25M  OK
 sao           7251944 ->    4556985   1.591x  c    1.12 MB/s  d   133.2 MB/s  cmem    132M dmem    19M  OK
+webster      41458703 ->    8346640   4.967x  c    0.71 MB/s  d   242.2 MB/s  cmem    246M dmem    24M  OK
+x-ray         8474240 ->    4365300   1.941x  c    0.98 MB/s  d   109.6 MB/s  cmem    150M dmem    19M  OK
+xml           5345280 ->     437852  12.208x  c    1.46 MB/s  d   456.0 MB/s  cmem     90M dmem    19M  OK
+TOTAL       211938580 ->   49113179   4.315x  c    0.90 MB/s  d   222.7 MB/s  cmem 281M dmem 25M

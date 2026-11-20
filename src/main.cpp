@@ -19,6 +19,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "-k")) P.lgchunk = v; else if (!strcmp(a, "-s")) P.lgseg = v; else if (!strcmp(a, "-u")) P.lgsub = v; else if (!strcmp(a, "-rs")) P.rankslots = v;
     else if (!strcmp(a, "-hn")) P.hdr_nz = atof(argv[i + 1]); else if (!strcmp(a, "-hb")) P.hdr_base = atof(argv[i + 1]);
     else if (!strcmp(a, "-ag")) P.align_gain = atof(argv[i + 1]);
+    else if (!strcmp(a, "-pc")) P.posctx = v;
     else if (!strcmp(a, "-sm")) P.smooth = v; else if (!strcmp(a, "-uc")) P.unseen_cap = atof(argv[i + 1]);
     else if (!strcmp(a, "-f2")) P.far2 = v; else if (!strcmp(a, "-f3")) P.far3 = v; else if (!strcmp(a, "-t")) P.maxtypes = v;
     else { fprintf(stderr, "unknown option %s\n", a); return 2; }

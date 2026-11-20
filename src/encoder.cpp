@@ -79,14 +79,14 @@ struct Models {
   int ncl, nll, nmk, nof, nal;
   u8 lmode[NT]; u32 lbase[NT];  // per literal type: context mode and offset into litmap
   u32 litn[MAXCL], lln[LL_MAXCL], mlkn[MLK_MAXCL], offn[OFF_MAXCL], aln[AL_MAXCL];  // symbols coded per table
-  u8 litmap[NT * MAXCTX], llmap[NT], mlkmap[NT * MLK_NCTX], offmap[NT * 4], almap[NT];
+  u8 litmap[NT * MAXCTX], llmap[NT * LL_NCTX], mlkmap[NT * MLK_NCTX], offmap[NT * OFF_NCTX], almap[NT];
   u16 lit[MAXCL][256], ll[LL_MAXCL][LL_SYMS], mlk[MLK_MAXCL][MLK_SYMS], off[OFF_MAXCL][OFF_SYMS], align[AL_MAXCL][ALIGN_SYMS];
 };
 struct Prices {
   int lgchunk, nch;
   u8 lmode[NT]; u32 lbase[NT];
   u8 ltype[MAXCH], ctype[MAXCH], dtype[MAXCH];
-  u8 litmap[NT * MAXCTX], llmap[NT], mlkmap[NT * MLK_NCTX], offmap[NT * 4], almap[NT];
+  u8 litmap[NT * MAXCTX], llmap[NT * LL_NCTX], mlkmap[NT * MLK_NCTX], offmap[NT * OFF_NCTX], almap[NT];
   float lit[MAXCL][256], ll[LL_MAXCL][LL_SYMS], mlk[MLK_MAXCL][MLK_SYMS], off[OFF_MAXCL][OFF_SYMS], align[AL_MAXCL][ALIGN_SYMS];
 };
 static float FPRICE[(1 << MAX_BITS) + 1];  // price of frequency f out of 1 << MAX_BITS
@@ -223,7 +223,7 @@ template <int D> static int cluster(const std::vector<HistT<D>>& h, int nctx, in
 }
 
 // ---------------- building models from a parse ----------------
-struct LitInfo { std::vector<u8> v, p1, p2, mb, pos; std::vector<u16> ch; std::vector<u32> seqch; };
+struct LitInfo { std::vector<u8> v, p1, p2, mb, pos; std::vector<u16> ch; std::vector<u32> seqch; std::vector<u8> seqpos; };
 
 static inline void rep_update(u32* r, u32 kind, u32 off) {
   if (kind == 0) return;
@@ -236,7 +236,7 @@ static inline void rep_update(u32* r, u32 kind, u32 off) {
 // (run-start chunk << 16 | match-start chunk).
 static void replay(const u8* base, u32 bs, int lg, u32 start, u32 end, const u32* reps_in, const std::vector<Seq>& seqs, LitInfo* L, u32* reps_out) {
   u32 pos = start; u32 r[NUM_REPS]; memcpy(r, reps_in, sizeof r);
-  if (L) { L->v.clear(); L->p1.clear(); L->p2.clear(); L->mb.clear(); L->pos.clear(); L->ch.clear(); L->seqch.clear(); }
+  if (L) { L->v.clear(); L->p1.clear(); L->p2.clear(); L->mb.clear(); L->pos.clear(); L->ch.clear(); L->seqch.clear(); L->seqpos.clear(); }
   auto lits = [&](u32 cnt) {
     if (L) for (u32 k = 0; k < cnt; k++, pos++) {
       const u8* q = base + pos;
@@ -245,9 +245,9 @@ static void replay(const u8* base, u32 bs, int lg, u32 start, u32 end, const u32
     } else pos += cnt;
   };
   for (const Seq& s : seqs) {
-    u32 c0 = (pos - bs) >> lg;
+    u32 c0 = (pos - bs) >> lg, a0 = pos & 3;
     lits(s.ll);
-    if (L) L->seqch.push_back((c0 << 16) | ((pos - bs) >> lg));
+    if (L) { L->seqch.push_back((c0 << 16) | ((pos - bs) >> lg)); L->seqpos.push_back((u8)(a0 | ((pos & 3) << 2))); }
     rep_update(r, s.kind, s.off); pos += s.ml;
   }
   lits(end - pos);
@@ -257,6 +257,29 @@ static void replay(const u8* base, u32 bs, int lg, u32 start, u32 end, const u32
 static inline u32 off_symbol(const Seq& s, u32& nb, u32& ex) {  // for kind >= 3
   if (s.kind == 3) { u32 sym; off_code(s.off - 1, sym, nb, ex); return sym; }
   nb = 0; ex = 0; return OFF_SLOTS + (s.kind - 4);
+}
+
+// h holds ntypes * 4 * sub histograms indexed [type][pos & 3][sub]. Clusters them as they are and
+// with the position dimension summed out, keeps the cheaper, and fills map (full layout), freq tables
+// and per-table symbol counts. Returns the number of tables.
+template <int D> static int cluster_pos(const std::vector<HistT<D>>& h, int ntypes, int sub, int maxcl, u8* map,
+                                        u16 (*tab)[D], u32* cnt, int bits, bool allow_pos) {
+  const int nfull = ntypes * 4 * sub, ncoll = ntypes * sub;
+  std::vector<HistT<D>> hc(ncoll); memset(hc.data(), 0, sizeof(HistT<D>) * ncoll);
+  for (int t = 0; t < ntypes; t++) for (int a = 0; a < 4; a++) for (int k = 0; k < sub; k++) {
+    const HistT<D>& src = h[(t * 4 + a) * sub + k]; HistT<D>& dst = hc[t * sub + k];
+    if (!src.tot) continue;
+    for (int i = 0; i < D; i++) dst.c[i] += src.c[i];
+    dst.tot += src.tot;
+  }
+  std::vector<HistT<D>> of, oc; std::vector<u8> mf(nfull), mc(ncoll); double cf = 1e300, cc = 0;
+  cluster(hc, ncoll, maxcl, mc.data(), oc, cc);
+  if (allow_pos) cluster(h, nfull, maxcl, mf.data(), of, cf);
+  const std::vector<HistT<D>>* o;
+  if (cf < cc) { o = &of; memcpy(map, mf.data(), nfull); }
+  else { o = &oc; for (int t = 0; t < ntypes; t++) for (int a = 0; a < 4; a++) for (int k = 0; k < sub; k++) map[(t * 4 + a) * sub + k] = mc[t * sub + k]; }
+  for (size_t c = 0; c < o->size(); c++) { normalize_freqs((*o)[c].c, D, tab[c], bits); cnt[c] = (*o)[c].tot; }
+  return (int)o->size();
 }
 
 template <int D> static std::vector<HistT<D>> zeros(int n) { std::vector<HistT<D>> h(n); memset(h.data(), 0, sizeof(HistT<D>) * n); return h; }
@@ -329,26 +352,26 @@ static void build_models(const u8* base, u32 bs, u32 bn, u32 start, u32 end, con
     for (int c = 0; c < M.ncl; c++) { normalize_freqs(outh[c].c, 256, M.lit[c], LIT_BITS); M.litn[c] = outh[c].tot; }
   }
   // --- command and distance tables
-  auto hll = zeros<LL_SYMS>(M.nct); auto hmlk = zeros<MLK_SYMS>(M.nct * MLK_NCTX);
-  auto hoff = zeros<OFF_SYMS>(M.ndt * 4); auto hal = zeros<ALIGN_SYMS>(M.ndt);
+  auto hll = zeros<LL_SYMS>(M.nct * LL_NCTX); auto hmlk = zeros<MLK_SYMS>(M.nct * MLK_NCTX);
+  auto hoff = zeros<OFF_SYMS>(M.ndt * OFF_NCTX); auto hal = zeros<ALIGN_SYMS>(M.ndt);
   for (size_t i = 0; i < ns; i++) {
     const Seq& s = seqs[i]; u32 ct0 = M.ctype[L.seqch[i] >> 16], c1 = L.seqch[i] & 0xffff, ct1 = M.ctype[c1], dt1 = M.dtype[c1];
     u32 sym, nb, ex;
-    ll_code(s.ll, sym, nb, ex); hll[ct0].c[sym]++; hll[ct0].tot++;
+    const u32 a0 = L.seqpos[i] & 3, a1 = L.seqpos[i] >> 2;
+    ll_code(s.ll, sym, nb, ex); { auto& hh = hll[ct0 * LL_NCTX + a0]; hh.c[sym]++; hh.tot++; }
     ml_code(s.ml - MIN_MATCH, sym, nb, ex);
-    { auto& hh = hmlk[ct1 * MLK_NCTX + mlk_ctx(s.ll)]; hh.c[std::min<u32>(s.kind, 3) * MLC_SYMS + sym]++; hh.tot++; }
+    { auto& hh = hmlk[ct1 * MLK_NCTX + a1 * MLK_LLCTX + mlk_ctx(s.ll)]; hh.c[std::min<u32>(s.kind, 3) * MLC_SYMS + sym]++; hh.tot++; }
     if (s.kind >= 3) {
       sym = off_symbol(s, nb, ex);
-      { auto& hh = hoff[dt1 * 4 + std::min<u32>(s.ml - MIN_MATCH, 3)]; hh.c[sym]++; hh.tot++; }
+      { auto& hh = hoff[dt1 * OFF_NCTX + a1 * OFF_LENCTX + std::min<u32>(s.ml - MIN_MATCH, 3)]; hh.c[sym]++; hh.tot++; }
       if (nb >= 4) { hal[dt1].c[ex & 15]++; hal[dt1].tot++; }
     }
   }
-  { std::vector<HistT<LL_SYMS>> o; M.nll = cluster(hll, M.nct, LL_MAXCL, M.llmap, o, cost);
-    for (int c = 0; c < M.nll; c++) { normalize_freqs(o[c].c, LL_SYMS, M.ll[c], LL_BITS); M.lln[c] = o[c].tot; } }
-  { std::vector<HistT<MLK_SYMS>> o; M.nmk = cluster(hmlk, M.nct * MLK_NCTX, MLK_MAXCL, M.mlkmap, o, cost);
-    for (int c = 0; c < M.nmk; c++) { normalize_freqs(o[c].c, MLK_SYMS, M.mlk[c], MLK_BITS); M.mlkn[c] = o[c].tot; } }
-  { std::vector<HistT<OFF_SYMS>> o; M.nof = cluster(hoff, M.ndt * 4, OFF_MAXCL, M.offmap, o, cost);
-    for (int c = 0; c < M.nof; c++) { normalize_freqs(o[c].c, OFF_SYMS, M.off[c], OFF_BITS); M.offn[c] = o[c].tot; } }
+  // Each of these is clustered twice, with and without the position-alignment part of the context,
+  // and the cheaper result kept: alignment helps record-structured data and only dilutes text.
+  M.nll = cluster_pos<LL_SYMS>(hll, M.nct, 1, LL_MAXCL, M.llmap, M.ll, M.lln, LL_BITS, prm.posctx & 1);
+  M.nmk = cluster_pos<MLK_SYMS>(hmlk, M.nct, MLK_LLCTX, MLK_MAXCL, M.mlkmap, M.mlk, M.mlkn, MLK_BITS, prm.posctx & 2);
+  M.nof = cluster_pos<OFF_SYMS>(hoff, M.ndt, OFF_LENCTX, OFF_MAXCL, M.offmap, M.off, M.offn, OFF_BITS, prm.posctx & 4);
   { std::vector<HistT<ALIGN_SYMS>> o; M.nal = cluster(hal, M.ndt, AL_MAXCL, M.almap, o, cost);
     u64 na = 0; for (int c = 0; c < M.nal; c++) na += o[c].tot;
     // If modelling the low offset bits saves under 1.5%, store them raw: one less decode per offset.
@@ -392,12 +415,13 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
       const Node N = nodes[i];
       if (N.cost >= INF) continue;
       const u32 ch = std::min<u32>((sb + ss + i) >> lg, P.nch - 1);
+      const u32 a = bs + sb + ss + i;
       const LitMode& lm = lit_mode(P.lmode[P.ltype[ch]]); const u8* lmap = P.litmap + P.lbase[P.ltype[ch]];
-      const float* pl = P.ll[P.llmap[P.ctype[ch]]];
-      const float* pm = P.mlk[P.mlkmap[P.ctype[ch] * MLK_NCTX + mlk_ctx(N.ll)]];
-      const u8* omap = P.offmap + P.dtype[ch] * 4;
+      const float* pl = P.ll[P.llmap[P.ctype[ch] * LL_NCTX + ((a - N.ll) & 3)]];
+      const float* pm = P.mlk[P.mlkmap[P.ctype[ch] * MLK_NCTX + (a & 3) * MLK_LLCTX + mlk_ctx(N.ll)]];
+      const u8* omap = P.offmap + P.dtype[ch] * OFF_NCTX + (a & 3) * OFF_LENCTX;
       const float* pal = P.align[P.almap[P.dtype[ch]]];
-      u32 a = bs + sb + ss + i; const u8* cur = base + a; u32 maxl = std::min<u32>(sn - i, MAX_MATCH);
+      const u8* cur = base + a; u32 maxl = std::min<u32>(sn - i, MAX_MATCH);
       u32 rl[3] = {0, 0, 0}; u32 bestr = 0, bestk = 0;
       if (maxl >= 2) for (u32 k = 0; k < 3; k++) {
         if ((k >= 1 && N.rep[k] == N.rep[0]) || (k == 2 && N.rep[2] == N.rep[1])) continue;
@@ -407,15 +431,17 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
       const u32 m0 = mst[i], nm = mst[i + 1] - m0;
       const u32* mo = ms.off.data() + m0; const u16* mln = ms.len.data() + m0;
       u32 bestm = nm ? std::min<u32>(mln[nm - 1], maxl) : 0;
-      const float base_c = N.cost + pl[0];
+      // cost of the next sequence's empty literal run, by the alignment of where this match ends
+      float ll0a[4]; for (u32 k = 0; k < 4; k++) ll0a[k] = P.ll[P.llmap[P.ctype[ch] * LL_NCTX + ((a + k) & 3)]][0];
+      const float base_c = N.cost;
       auto match_price = [&](u32 ml, u32 kind) { u32 s, nb, ex; ml_code(ml - MIN_MATCH, s, nb, ex); return pm[kind * MLC_SYMS + s] + nb; };
       auto off_price = [&](u32 off, u32 c) {
         u32 s, nb, ex; off_code(off - 1, s, nb, ex);
         return P.off[omap[c]][s] + (nb >= 4 ? (float)(nb - 4) + pal[ex & 15] : (float)nb);
       };
       if (bestr >= nice || bestm >= nice) {
-        if (bestr >= bestm) relax(i + bestr, base_c + match_price(bestr, bestk), N, bestr, N.rep[bestk], bestk);
-        else relax(i + bestm, base_c + match_price(bestm, 3) + off_price(mo[nm - 1], 3), N, bestm, mo[nm - 1], 3);
+        if (bestr >= bestm) relax(i + bestr, base_c + ll0a[bestr & 3] + match_price(bestr, bestk), N, bestr, N.rep[bestk], bestk);
+        else relax(i + bestm, base_c + ll0a[bestm & 3] + match_price(bestm, 3) + off_price(mo[nm - 1], 3), N, bestm, mo[nm - 1], 3);
         i += std::max(bestr, bestm) - 1;
         continue;
       }
@@ -429,7 +455,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
       }
       if (maxl < 2) continue;
       for (u32 k = 0; k < 3; k++) {
-        for (u32 l = MIN_MATCH; l <= rl[k]; l++) relax(i + l, base_c + match_price(l, k), N, l, N.rep[k], k);
+        for (u32 l = MIN_MATCH; l <= rl[k]; l++) relax(i + l, base_c + ll0a[l & 3] + match_price(l, k), N, l, N.rep[k], k);
       }
       // special offsets: rep3 and rep0/rep1 +- 1..3
       const u16 c16 = (u16)load16(cur);
@@ -441,7 +467,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
         if (load16(cur - off) != c16) continue;
         u32 len = match_len(cur, cur - off, maxl);
         for (u32 l = MIN_MATCH; l <= len; l++)
-          relax(i + l, base_c + match_price(l, 3) + P.off[omap[std::min<u32>(l - MIN_MATCH, 3)]][OFF_SLOTS + sp], N, l, off, 4 + sp);
+          relax(i + l, base_c + ll0a[l & 3] + match_price(l, 3) + P.off[omap[std::min<u32>(l - MIN_MATCH, 3)]][OFF_SLOTS + sp], N, l, off, 4 + sp);
       }
       u32 prev = MIN_MATCH - 1;
       for (u32 j = 0; j < nm; j++) {
@@ -451,7 +477,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
         u32 lmin = off > t3 ? 4 : off > t2 ? 3 : 2;
         float op[4]; for (u32 c = 0; c < 4; c++) op[c] = off_price(off, c);
         for (u32 l = std::max(prev + 1, lmin); l <= lc; l++)
-          relax(i + l, base_c + match_price(l, 3) + op[std::min<u32>(l - MIN_MATCH, 3)], N, l, off, 3);
+          relax(i + l, base_c + ll0a[l & 3] + match_price(l, 3) + op[std::min<u32>(l - MIN_MATCH, 3)], N, l, off, 3);
         prev = lc;
       }
     }
@@ -500,12 +526,12 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   u32 pos = bs, li = 0; u32 r[NUM_REPS]; memcpy(r, reps_in, sizeof r);
   const int lg = M.lgchunk; const LitMode* lm = &lit_mode(0);
   const u32 end = bs + bn; u32 chunk_end = bs;
-  const u8* lmap = nullptr; const u8* mmap = nullptr; const u8* omap = nullptr; u32 llc = 0, alc = 0;
+  const u8* lmap = nullptr; const u8* mmap = nullptr; const u8* omap = nullptr; const u8* llm = nullptr; u32 alc = 0;
   auto upd = [&]() {
     if (pos >= end) return;
     u32 ch = (pos - bs) >> lg; chunk_end = bs + ((ch + 1) << lg);
-    lm = &lit_mode(M.lmode[M.ltype[ch]]); lmap = M.litmap + M.lbase[M.ltype[ch]]; llc = M.llmap[M.ctype[ch]];
-    mmap = M.mlkmap + M.ctype[ch] * MLK_NCTX; omap = M.offmap + M.dtype[ch] * 4; alc = M.almap[M.dtype[ch]];
+    lm = &lit_mode(M.lmode[M.ltype[ch]]); lmap = M.litmap + M.lbase[M.ltype[ch]]; llm = M.llmap + M.ctype[ch] * LL_NCTX;
+    mmap = M.mlkmap + M.ctype[ch] * MLK_NCTX; omap = M.offmap + M.dtype[ch] * OFF_NCTX; alc = M.almap[M.dtype[ch]];
   };
   auto lits = [&](u32 cnt) {
     while (cnt) {
@@ -521,15 +547,16 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   for (const Seq& s : seqs) {
     u32 sym, nb, ex;
     if (pos >= chunk_end) upd();
+    const u32 llc = llm[pos & 3];
     ll_code(s.ll, sym, nb, ex); add(cll[llc][sym], M.ll[llc][sym], 2, LL_BITS); bits.put(ex, nb); g_bits[1] += FPRICE[(u32)M.ll[llc][sym] << (MAX_BITS - LL_BITS)]; g_bits[5] += nb;
     lits(s.ll);
     ml_code(s.ml - MIN_MATCH, sym, nb, ex);
-    u32 c = mmap[mlk_ctx(s.ll)]; u32 ms = std::min<u32>(s.kind, 3) * MLC_SYMS + sym;
+    u32 c = mmap[(pos & 3) * MLK_LLCTX + mlk_ctx(s.ll)]; u32 ms = std::min<u32>(s.kind, 3) * MLC_SYMS + sym;
     add(cmlk[c][ms], M.mlk[c][ms], 3, MLK_BITS); bits.put(ex, nb); g_bits[2] += FPRICE[(u32)M.mlk[c][ms] << (MAX_BITS - MLK_BITS)]; g_bits[5] += nb;
     g_kinds[s.kind]++;
     if (s.kind >= 3) {
       sym = off_symbol(s, nb, ex);
-      u32 oc = omap[std::min<u32>(s.ml - MIN_MATCH, 3)];
+      u32 oc = omap[(pos & 3) * OFF_LENCTX + std::min<u32>(s.ml - MIN_MATCH, 3)];
       add(coff[oc][sym], M.off[oc][sym], 2, OFF_BITS); g_bits[3] += FPRICE[(u32)M.off[oc][sym] << (MAX_BITS - OFF_BITS)]; g_bits[6] += nb >= 4 ? nb - 4 : nb;
       if (nb >= 4 && M.nal) { bits.put(ex >> 4, nb - 4); add(cal[alc][ex & 15], M.align[alc][ex & 15], 3, AL_BITS); g_bits[4] += FPRICE[(u32)M.align[alc][ex & 15] << (MAX_BITS - AL_BITS)]; }
       else if (nb >= 4) { bits.put(ex, nb); g_bits[4] += 4; }
@@ -562,11 +589,11 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   u32 nmap = 0; for (int t = 0; t < M.nlt; t++) { hw.put(M.lmode[t], 4); nmap += lit_mode(M.lmode[t]).nctx; }
   hw.put(M.ncl - 1, 6); write_map(hw, M.litmap, (int)nmap, M.ncl);
   for (int c = 0; c < M.ncl; c++) write_table(hw, M.lit[c], 256);
-  hw.put(M.nll - 1, 3); write_map(hw, M.llmap, M.nct, M.nll);
+  hw.put(M.nll - 1, 3); write_map(hw, M.llmap, M.nct * LL_NCTX, M.nll);
   for (int c = 0; c < M.nll; c++) write_table(hw, M.ll[c], LL_SYMS);
   hw.put(M.nmk - 1, 4); write_map(hw, M.mlkmap, M.nct * MLK_NCTX, M.nmk);
   for (int c = 0; c < M.nmk; c++) write_table(hw, M.mlk[c], MLK_SYMS);
-  hw.put(M.nof - 1, 4); write_map(hw, M.offmap, M.ndt * 4, M.nof);
+  hw.put(M.nof - 1, 4); write_map(hw, M.offmap, M.ndt * OFF_NCTX, M.nof);
   for (int c = 0; c < M.nof; c++) write_table(hw, M.off[c], OFF_SYMS);
   hw.put(M.nal, 3); if (M.nal) write_map(hw, M.almap, M.ndt, M.nal);
   for (int c = 0; c < M.nal; c++) write_table(hw, M.align[c], ALIGN_SYMS);
