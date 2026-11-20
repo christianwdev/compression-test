@@ -16,11 +16,13 @@ static void write_file(const char* path, const u8* d, size_t n) {
 }
 
 int main(int argc, char** argv) {
+
   if (argc < 4) { fprintf(stderr, "usage: gt c [-w lgwin] [-b lgblock] [-d depth] [-n nice] [-p passes] [-c maxcl] [-v] in out\n       gt d in out\n"); return 2; }
   Params P; int i = 2;
   for (; i < argc - 2; i++) {
     const char* a = argv[i];
     if (!strcmp(a, "-v")) { P.verbose = 1; continue; }
+    if (!strcmp(a, "-vv")) { P.verbose = 2; continue; }
     if (i + 1 >= argc - 2) break;
     int v = atoi(argv[i + 1]);
     if (!strcmp(a, "-w")) P.lgwin = v; else if (!strcmp(a, "-b")) P.lgblock = v;
@@ -40,10 +42,10 @@ int main(int argc, char** argv) {
     if (P.verbose) fprintf(stderr, "%zu -> %zu (%.3fx) %.2fs\n", src.size(), c.size(), (double)src.size() / c.size(),
                            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   } else {
-    std::vector<u8> d;
-    src.reserve(src.size() + 32);
-    if (!decompress(src.data(), src.size(), d)) { fprintf(stderr, "decode error\n"); return 1; }
-    write_file(out, d.data(), d.size());
+    std::vector<u8> d; size_t off = 0, len = 0;
+    if (!decompress(src.data(), src.size(), d, off, len)) { fprintf(stderr, "decode error\n"); return 1; }
+    if (P.verbose) fprintf(stderr, "decode %.3fs\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    write_file(out, d.data() + off, len);
   }
   return 0;
 }

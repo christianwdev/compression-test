@@ -37,46 +37,47 @@ static void init_static() {
 
 #define RANS_DEC(x, tab, sym) do { u32 e_ = (tab)[(x) & (SCALE - 1)]; \
     (x) = ((e_ >> 8) & 0xfff) * ((x) >> SCALE_BITS) + (e_ >> 20); (sym) = e_ & 0xff; \
-    if ((x) < RANS_L) { (x) = ((x) << 16) | load16(rp); rp += 2; } } while (0)
+    u32 w_ = load16(rp); u32 lo_ = (x) < RANS_L; (x) = lo_ ? ((x) << 16) | w_ : (x); rp += lo_ * 2; } while (0)
+
+static inline void copy16(u8* d, const u8* s) { u64 a = load64(s), b = load64(s + 8); memcpy(d, &a, 8); memcpy(d + 8, &b, 8); }
 
 template <int MODE>
 static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 end, u32 nseq, u32* reps,
                         const u8* rp, const u8* bitp) {
-  u32 x0 = load32(rp), x1 = load32(rp + 4), x2 = load32(rp + 8), x3 = load32(rp + 12); rp += 16;
+  u32 xa = load32(rp), xb = load32(rp + 4), x2 = load32(rp + 8), x3 = load32(rp + 12); rp += 16;
   BitReader br; br.init(bitp);
   u32 r0 = reps[0], r1 = reps[1], r2 = reps[2], r3 = reps[3];
-  u32 li = 0, pos = bs, chunk_end = bs;
+  u32 pos = bs, chunk_end = bs;
   const int lg = T.lgchunk; const int nctx = LIT_NCTX[MODE];
   const u8* lmap = T.litmap; const u8* mmap = T.mlkmap; const u8* omap = T.offmap;
   const u32* llt = T.ll[0]; const u32* alt = T.align[0];
 #define UPDATE_CHUNK() do { if (pos < end) { u32 ch = (pos - bs) >> lg; chunk_end = bs + ((ch + 1) << lg); \
     lmap = T.litmap + (size_t)T.ltype[ch] * nctx; llt = T.ll[T.llmap[T.ctype[ch]]]; \
     mmap = T.mlkmap + T.ctype[ch] * MLK_NCTX; omap = T.offmap + T.dtype[ch] * 4; alt = T.align[T.almap[T.dtype[ch]]]; } } while (0)
+#define LIT1(X) do { u8 mb_ = *(q - r0); const u32* t_ = T.lit[lmap[lit_ctx(MODE, (u32)(q - base), q[-1], q[-2], mb_)]]; \
+    u32 sym_; RANS_DEC(X, t_, sym_); *q++ = lit_sub(MODE) ? (u8)(sym_ + mb_) : (u8)sym_; } while (0)
   for (u32 s = 0; s <= nseq; s++) {
     u32 ll;
     if (pos >= chunk_end) UPDATE_CHUNK();
+    br.refill();
     if (s < nseq) {
       u32 sym; RANS_DEC(x2, llt, sym);
-      ll = LL_BASE[sym] + br.get(LL_NB[sym]);
+      u32 nb = LL_NB[sym]; ll = LL_BASE[sym] + (u32)(br.acc & ((1ull << nb) - 1)); br.acc >>= nb; br.n -= nb;
     } else ll = end - pos;
     const u32 ll0 = ll;
     while (ll) {
       u32 n = std::min(ll, chunk_end - pos);
-      for (u32 k = 0; k < n; k++) {
-        const u8* q = base + pos; u8 p1 = *(q - 1), mb = *(q - r0);
-        const u32* t = T.lit[lmap[lit_ctx(MODE, pos, p1, *(q - 2), mb)]];
-        u32 sym;
-        if (li & 1) RANS_DEC(x1, t, sym); else RANS_DEC(x0, t, sym);
-        li++;
-        base[pos++] = lit_sub(MODE) ? (u8)(sym + mb) : (u8)sym;
-      }
-      ll -= n;
+      u8* q = base + pos; u8* qe = q + n;
+      while (q + 2 <= qe) { LIT1(xa); LIT1(xb); }
+      if (q < qe) { LIT1(xa); u32 t = xa; xa = xb; xb = t; }
+      pos += n; ll -= n;
       if (pos >= chunk_end) UPDATE_CHUNK();
     }
     if (s == nseq) break;
     u32 sym; RANS_DEC(x3, T.mlk[mmap[mlk_ctx(ll0)]], sym);
     u32 kind = MLK_KIND[sym], mc = MLK_MC[sym];
-    u32 ml = MIN_MATCH + ML_BASE[mc] + br.get(ML_NB[mc]);
+    u32 mnb = ML_NB[mc];
+    u32 ml = MIN_MATCH + ML_BASE[mc] + (u32)(br.acc & ((1ull << mnb) - 1)); br.acc >>= mnb; br.n -= mnb;
     u32 off;
     if (kind == 3) {
       u32 c = ml - MIN_MATCH; if (c > 3) c = 3;
@@ -96,20 +97,22 @@ static void decode_seqs(const DecTables& T, u8* base, const u32 bs, const u32 en
     } else if (kind == 0) off = r0;
     else if (kind == 1) { off = r1; r1 = r0; r0 = off; }
     else { off = r2; r2 = r1; r1 = r0; r0 = off; }
-    u8* d = base + pos; const u8* m = d - off;
-    for (u32 k = 0; k < ml; k++) d[k] = m[k];
+    u8* d = base + pos; const u8* m = d - off; u8* de = d + ml;
+    if (off >= 16) { do { copy16(d, m); d += 16; m += 16; } while (d < de); }
+    else { do { *d++ = *m++; } while (d < de); }
     pos += ml;
   }
   reps[0] = r0; reps[1] = r1; reps[2] = r2; reps[3] = r3;
 #undef UPDATE_CHUNK
+#undef LIT1
 }
 
-bool decompress(const u8* in, size_t n, std::vector<u8>& out) {
+bool decompress(const u8* in, size_t n, std::vector<u8>& buf, size_t& out_off, size_t& out_len) {
   init_static();
   if (n < 5 || memcmp(in, "GT0\2", 4)) return false;
   const u8* p = in + 4;
   u64 total = get_varint(p);
-  std::vector<u8> buf(total + PAD + 64, 0);
+  buf.assign(total + PAD + 64, 0);
   u8* base = buf.data() + PAD;
   DecTables* T = new DecTables;
   u32 reps[NUM_REPS] = {1, 2, 3, 4};
@@ -149,12 +152,14 @@ bool decompress(const u8* in, size_t n, std::vector<u8>& out) {
       case 4: decode_seqs<4>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
       case 5: decode_seqs<5>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
       case 6: decode_seqs<6>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
-      default: decode_seqs<7>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
+      case 7: decode_seqs<7>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
+      case 8: decode_seqs<8>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
+      default: decode_seqs<9>(*T, base, (u32)pos, end, nseq, reps, rp, bitp); break;
     }
     p = bitp + bb; pos += raw;
   }
   delete T;
-  out.assign(base, base + total);
+  out_off = PAD; out_len = total;
   return true;
 }
 

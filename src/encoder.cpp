@@ -538,6 +538,7 @@ std::vector<u8> compress(const u8* in, size_t n, const Params& prm) {
       }
     }
     mstart[bn] = (u32)mlist.size();
+    if (prm.verbose > 1) fprintf(stderr, "block %llu: %u bytes, %zu matches (%.2f/pos)\n", (unsigned long long)bs, bn, mlist.size(), (double)mlist.size() / bn);
     int passes = prior ? prm.passes : prm.passes + 1;
     carry_prior(*pr, (int)((bn + (1u << prm.lgchunk) - 1) >> prm.lgchunk));
     for (int it = 0; it < passes; it++) {

@@ -15,7 +15,7 @@ namespace gt {
 enum { SCALE_BITS = 12, SCALE = 1 << SCALE_BITS, RANS_L = 1 << 16 };
 enum { MIN_MATCH = 2, MAX_MATCH = 65537, PAD = 16 };
 enum { LL_SYMS = 56, MLC_SYMS = 54, MLK_SYMS = 4 * MLC_SYMS, OFF_SLOTS = 60, NUM_SPECIAL = 13, OFF_SYMS = OFF_SLOTS + NUM_SPECIAL, ALIGN_SYMS = 16 };
-enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 8, NUM_REPS = 4 };
+enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 10, NUM_REPS = 4 };
 // Sequence kinds: 0..2 = rep0..rep2, 3 = new offset (slot coded), 4 = rep3, 5..16 = rep0/rep1 +- 1..3.
 // Kinds >= 3 are signalled as kind 3 in the MLK symbol; the OFF symbol then selects slot or special.
 static const int NEAR_DELTA[6] = {-1, 1, -2, 2, -3, 3};
@@ -47,7 +47,7 @@ static inline void off_code(u32 v, u32& sym, u32& nb, u32& ex) {  // v = dist - 
 }
 
 // ---- literal context modes
-static const int LIT_NCTX[NUM_LITMODES] = {1, 256, 256, 4, 256, 256, 256, 1024};
+static const int LIT_NCTX[NUM_LITMODES] = {1, 256, 256, 4, 256, 256, 256, 1024, 1024, 1024};
 static inline bool lit_sub(int mode) { return mode == 3 || mode == 4; }
 static inline u32 byte_class(u8 c) {  // coarse class of a byte, used for second-order contexts
   if (c >= 0x80) return 3;
@@ -64,7 +64,9 @@ static inline u32 lit_ctx(int mode, u32 pos, u8 p1, u8 p2, u8 mb) {
     case 4: return p1;
     case 5: return (p1 >> 4) | (mb & 0xf0);
     case 6: return ((pos & 3) << 6) | (p1 >> 2);
-    default: return ((u32)p1 << 2) | byte_class(p2);
+    case 7: return ((u32)p1 << 2) | byte_class(p2);
+    case 8: return ((u32)mb << 2) | byte_class(p1);
+    default: return ((u32)(mb >> 3) << 5) | (p1 >> 3);
   }
 }
 
@@ -110,13 +112,14 @@ struct Params {
   int passes = 2;      // optimal-parse iterations per block
   int maxcl = 32;      // max literal clusters
   int hashbits = 20;
-  int modemask = 0xff; // enabled literal modes
+  int modemask = 0xffff; // enabled literal modes
   int lgchunk = 13;    // table-switch granularity (bytes = 1<<lgchunk)
   int maxtypes = 8;    // max table sets per block for each of literals / commands / distances
   int verbose = 0;
 };
 
 std::vector<u8> compress(const u8* in, size_t n, const Params& p);
-bool decompress(const u8* in, size_t n, std::vector<u8>& out);
+// Decodes into buf; the output is buf[out_off .. out_off + out_len).
+bool decompress(const u8* in, size_t n, std::vector<u8>& buf, size_t& out_off, size_t& out_len);
 
 }  // namespace gt

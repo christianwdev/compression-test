@@ -30,6 +30,10 @@ Baselines on this machine (Silesia total, bytes):
    almost no header cost). Added chunk-level table switching: `xml` 460K -> 432K at high settings
    (brotli 430.5K).
 
+5. Full corpus with `-b 22 -p 3 -t 16` (results/gt-v2a): **48,913,906 bytes, 1.3% smaller than
+   brotli -q 11**, 0.86 MB/s compress (2.1x brotli). Not yet acceptable on the other axes:
+   657 MB compress memory, 114 MB decompress memory, 140 MB/s decompress.
+
 ## Open items
 
 - Decoder speed (currently ~150 MB/s; not yet optimised).

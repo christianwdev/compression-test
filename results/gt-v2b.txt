@@ -1,1 +1,9 @@
 dickens      10192446 ->    2804273   3.635x  c    0.55 MB/s  d   122.0 MB/s  cmem    804M dmem    25M  OK
+mozilla      51220480 ->   13760824   3.722x  c    0.74 MB/s  d   130.6 MB/s  cmem    849M dmem   114M  OK
+mr            9970564 ->    2803592   3.556x  c    0.51 MB/s  d   124.1 MB/s  cmem    718M dmem    25M  OK
+nci          33553445 ->    1480766  22.660x  c    0.46 MB/s  d   287.7 MB/s  cmem    818M dmem    69M  OK
+ooffice       6152192 ->    2462562   2.498x  c    0.67 MB/s  d    72.9 MB/s  cmem    517M dmem    18M  OK
+osdb         10085684 ->    2750896   3.666x  c    0.65 MB/s  d   148.5 MB/s  cmem    722M dmem    25M  OK
+reymont       6627202 ->    1307485   5.069x  c    0.52 MB/s  d   148.5 MB/s  cmem    599M dmem    18M  OK
+samba        21606400 ->    3753955   5.756x  c    0.70 MB/s  d   146.6 MB/s  cmem    710M dmem    48M  OK
+sao           7251944 ->    4545821   1.595x  c    0.84 MB/s  d    94.1 MB/s  cmem    615M dmem    21M  OK
