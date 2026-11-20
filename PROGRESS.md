@@ -50,9 +50,29 @@ Baselines on this machine (Silesia total, bytes):
     than xz -9. 0.89 MB/s compress (2.2x brotli), 220 MB compress memory (brotli 238 MB), 25 MB
     decompress memory (brotli 20 MB). Decode speed about level with brotli; being re-measured.
 
+11. Tried table-based ANS (tANS, three variants) in place of rANS: about 10% slower to decode
+    here because the shared bit buffer serialises every symbol. Reverted; kept rANS with five
+    states (+4-8% decode).
+12. Match-length limit raised to 273 (`nci` -3%, `xml` -1.4%, about 15% more compress time) and
+    block headers coded with an adaptive range coder (-13% header bytes).
+13. Full corpus (results/gt-v10), clean run against a clean brotli run (results/brotli-11-clean):
+
+    | | brotli -q 11 | gt |
+    |---|---|---|
+    | Size | 49,564,563 | **48,547,795 (-2.05%)** |
+    | Compress | 0.41 MB/s | 0.90 MB/s (2.2x) |
+    | Decompress | 233.9 MB/s | 266.2 MB/s (1.14x) |
+    | Compress memory (peak) | 238 MB | 221 MB |
+    | Decompress memory (peak) | 20 MB | 25 MB |
+
+    Smaller than brotli on 10 of 12 files; `samba` +0.04% and `xml` +0.20% are still larger.
+    Decode is faster on 10 of 12; `reymont` (0.95x) and `webster` (0.97x) are slower.
+
 ## Open items
 
-- Literal mode selection is unstable (see 8).
-- Longer optimal-parse match limit helps `nci` by ~3% but costs time; needs a cheaper long-match path.
-- Table header coding is still naive.
-- Decompress memory is 25 MB vs brotli's 20 MB.
+- `xml` and `samba` still marginally larger than brotli (header size, deeper match search).
+- Text decode speed on `reymont` / `webster`.
+- Decompress memory is 25 MB vs brotli's 20 MB on files larger than the window.
+- Compress memory on small files is 10-35% above brotli's (peak is below).
+- Literal mode selection still interacts with the parse (up to ~1% on some files).
+- Not done: fuzzing the decoder against corrupt input, inputs of 4 GB or more.

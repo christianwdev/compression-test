@@ -11,7 +11,7 @@ round-trip verified by SHA-256:
 |---|---|
 | Total compressed size | **<= 49,564,563 bytes** (must) |
 | Compression speed | faster than 0.41 MB/s (want) |
-| Decompression speed | faster than ~239 MB/s (want) |
+| Decompression speed | faster than ~234 MB/s (want) |
 | Peak memory | similar: ~238 MB compress, ~20 MB decompress (want) |
 
 "Must" is the ratio. The "want" rows are pursued once ratio is met, without giving ratio back.
