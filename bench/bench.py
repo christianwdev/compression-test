@@ -8,7 +8,7 @@ import argparse, json, os, subprocess, sys, tempfile, time, hashlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-BIN = os.path.join(ROOT, "build", "gt")
+BIN = os.environ.get("GT_BIN", os.path.join(ROOT, "build", "gt"))
 
 CODECS = {
     "brotli-11":   ("brotli -q 11 -f -o {out} {in}", "brotli -d -f -o {out} {in}"),

@@ -1,0 +1,1 @@
+dickens      10192446 ->    2804273   3.635x  c    0.55 MB/s  d   122.0 MB/s  cmem    804M dmem    25M  OK
