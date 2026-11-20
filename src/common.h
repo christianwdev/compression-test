@@ -47,27 +47,16 @@ static inline void off_code(u32 v, u32& sym, u32& nb, u32& ex) {  // v = dist - 
 }
 
 // ---- literal context modes
-static const int LIT_NCTX[NUM_LITMODES] = {1, 256, 256, 4, 256, 256, 256, 1024, 1024, 1024};
-static inline bool lit_sub(int mode) { return mode == 3 || mode == 4; }
+// The context of a literal is A[prev byte] + B[match byte] + C[byte before prev] + D[pos & 3], where
+// the match byte is the byte at the most recent offset. A mode is a choice of those four tables plus
+// whether the literal is coded as (literal - match byte). Each literal type of a block has a mode.
+struct LitMode { u16 A[256], B[256], C[256], D[4]; u16 nctx; u8 sub; };
+const LitMode& lit_mode(int m);
 static inline u32 byte_class(u8 c) {  // coarse class of a byte, used for second-order contexts
   if (c >= 0x80) return 3;
   if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return 2;
   if (c >= 0x30) return 1;
   return 0;
-}
-static inline u32 lit_ctx(int mode, u32 pos, u8 p1, u8 p2, u8 mb) {
-  switch (mode) {
-    case 0: return 0;
-    case 1: return p1;
-    case 2: return mb;
-    case 3: return pos & 3;
-    case 4: return p1;
-    case 5: return (p1 >> 4) | (mb & 0xf0);
-    case 6: return ((pos & 3) << 6) | (p1 >> 2);
-    case 7: return ((u32)p1 << 2) | byte_class(p2);
-    case 8: return ((u32)mb << 2) | byte_class(p1);
-    default: return ((u32)(mb >> 3) << 5) | (p1 >> 3);
-  }
 }
 
 // ---- bit IO (LSB first)
@@ -113,9 +102,10 @@ struct Params {
   int maxcl = 32;      // max literal clusters
   int hashbits = 20;
   int modemask = 0xffff; // enabled literal modes
-  int fullevery = 0;   // 1: re-evaluate all literal modes on every model build
-  int modetop = 99;     // literal modes fully evaluated after the cheap ranking (>= NUM_LITMODES: all)
-  double alpha = 0.1;  // smoothing constant of the cheap ranking
+  double hdr_nz = 8.0, hdr_base = 32.0;  // table cost model used when clustering: base + per used symbol
+  int smooth = 0;      // smoothed prices for symbols a table has not seen
+  double unseen_cap = 14.0;
+  int rankslots = 32;  // contexts kept separate when ranking literal modes for a type
   int lgsub = 20;      // match-storage / price-refinement unit inside a block
   int lgseg = 18;      // optimal-parse segment size
   int far2 = 1 << 8;   // max offset for which a new length-2 match is considered
@@ -127,7 +117,7 @@ struct Params {
 
 // `base` must have PAD readable zero bytes before it and PAD + 8 readable bytes after base + n.
 std::vector<u8> compress(const u8* base, size_t n, const Params& p);
-// Decodes into buf; the output is buf[out_off .. out_off + out_len).
-bool decompress(const u8* in, size_t n, std::vector<u8>& buf, size_t& out_off, size_t& out_len);
+// Streaming decode from fin to fout.
+bool decompress(FILE* fin, FILE* fout);
 
 }  // namespace gt

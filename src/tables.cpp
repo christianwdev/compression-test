@@ -83,4 +83,33 @@ void read_map(BitReader& br, u8* map, int nctx, int ncl) {
   }
 }
 
+
+static LitMode g_modes[NUM_LITMODES];
+static bool g_modes_init = false;
+const LitMode& lit_mode(int m) {
+  if (!g_modes_init) {
+    memset(g_modes, 0, sizeof g_modes);
+    for (int mode = 0; mode < NUM_LITMODES; mode++) {
+      LitMode& L = g_modes[mode]; L.nctx = 1; L.sub = 0;
+      for (int x = 0; x < 256; x++) {
+        switch (mode) {
+          case 1: L.A[x] = x; L.nctx = 256; break;                       // previous byte
+          case 2: L.B[x] = x; L.nctx = 256; break;                       // match byte
+          case 3: L.sub = 1; L.nctx = 4; break;                          // position, delta coded
+          case 4: L.A[x] = x; L.sub = 1; L.nctx = 256; break;            // previous byte, delta coded
+          case 5: L.A[x] = x >> 4; L.B[x] = x & 0xf0; L.nctx = 256; break;
+          case 6: L.A[x] = x >> 2; L.nctx = 256; break;                  // position + previous byte
+          case 7: L.A[x] = x << 2; L.C[x] = byte_class((u8)x); L.nctx = 1024; break;
+          case 8: L.B[x] = x << 2; L.A[x] = byte_class((u8)x); L.nctx = 1024; break;
+          case 9: L.B[x] = (x >> 3) << 5; L.A[x] = x >> 3; L.nctx = 1024; break;
+          default: break;
+        }
+      }
+      for (int k = 0; k < 4; k++) L.D[k] = mode == 3 ? k : mode == 6 ? k << 6 : 0;
+    }
+    g_modes_init = true;
+  }
+  return g_modes[m];
+}
+
 }  // namespace gt

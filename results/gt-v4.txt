@@ -1,0 +1,13 @@
+dickens      10192446 ->    2793049   3.649x  c    0.69 MB/s  d   181.7 MB/s  cmem    164M dmem    16M  OK
+mozilla      51220480 ->   13938469   3.675x  c    0.85 MB/s  d   155.5 MB/s  cmem    284M dmem    27M  OK
+mr            9970564 ->    2801445   3.559x  c    1.02 MB/s  d   156.9 MB/s  cmem    155M dmem    18M  OK
+nci          33553445 ->    1552819  21.608x  c    0.92 MB/s  d   473.9 MB/s  cmem    210M dmem    24M  OK
+ooffice       6152192 ->    2469939   2.491x  c    0.76 MB/s  d    86.9 MB/s  cmem    126M dmem    19M  OK
+osdb         10085684 ->    2763789   3.649x  c    0.81 MB/s  d   170.3 MB/s  cmem    145M dmem    19M  OK
+reymont       6627202 ->    1305286   5.077x  c    0.64 MB/s  d   200.1 MB/s  cmem    124M dmem    19M  OK
+samba        21606400 ->    3789422   5.702x  c    1.01 MB/s  d   243.7 MB/s  cmem    231M dmem    26M  OK
+sao           7251944 ->    4564610   1.589x  c    0.86 MB/s  d    89.7 MB/s  cmem    133M dmem    19M  OK
+webster      41458703 ->    8327298   4.979x  c    0.63 MB/s  d   212.5 MB/s  cmem    251M dmem    25M  OK
+x-ray         8474240 ->    4322753   1.960x  c    1.02 MB/s  d    90.0 MB/s  cmem    153M dmem    19M  OK
+xml           5345280 ->     442689  12.075x  c    1.24 MB/s  d   340.1 MB/s  cmem     95M dmem    19M  OK
+TOTAL       211938580 ->   49071568   4.319x  c    0.81 MB/s  d   183.1 MB/s  cmem 284M dmem 27M
