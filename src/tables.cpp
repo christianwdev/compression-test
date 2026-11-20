@@ -1,15 +1,17 @@
 #include "common.h"
 namespace gt {
 
-void normalize_freqs(const u32* cnt, int n, u16* f) {
-  u64 tot = 0; int nz = 0;
-  for (int i = 0; i < n; i++) { tot += cnt[i]; nz += cnt[i] != 0; }
+void normalize_freqs(const u32* cnt, int n, u16* f, int bits) {
+  const int SCALE = 1 << bits;
+  u64 tot = 0;
+  for (int i = 0; i < n; i++) tot += cnt[i];
   if (tot == 0) { memset(f, 0, n * sizeof(u16)); f[0] = SCALE - 1; f[1] = 1; return; }
   int sum = 0;
   for (int i = 0; i < n; i++) {
     if (!cnt[i]) { f[i] = 0; continue; }
     u64 v = ((u64)cnt[i] * SCALE + tot / 2) / tot;
-    if (v < 1) v = 1; if (v > SCALE - 1) v = SCALE - 1;
+    if (v < 1) v = 1;
+    if (v > (u64)SCALE - 1) v = (u64)SCALE - 1;
     f[i] = (u16)v; sum += (int)v;
   }
   int diff = SCALE - sum;

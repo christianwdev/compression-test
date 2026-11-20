@@ -88,12 +88,12 @@ struct Prices {
   u8 litmap[NT * MAXCTX], llmap[NT], mlkmap[NT * MLK_NCTX], offmap[NT * 4], almap[NT];
   float lit[MAXCL][256], ll[LL_MAXCL][LL_SYMS], mlk[MLK_MAXCL][MLK_SYMS], off[OFF_MAXCL][OFF_SYMS], align[AL_MAXCL][ALIGN_SYMS];
 };
-static float FPRICE[SCALE + 1];
+static float FPRICE[(1 << MAX_BITS) + 1];  // price of frequency f out of 1 << MAX_BITS
 static double XLOGX[65536];
 static bool g_einit = false;
 static void einit() {
   if (g_einit) return;
-  FPRICE[0] = 13.0f; for (int i = 1; i <= SCALE; i++) FPRICE[i] = (float)log2((double)SCALE / i);
+  FPRICE[0] = 13.0f; for (int i = 1; i <= (1 << MAX_BITS); i++) FPRICE[i] = (float)log2((double)(1 << MAX_BITS) / i);
   XLOGX[0] = 0; for (int i = 1; i < 65536; i++) XLOGX[i] = i * log2((double)i);
   g_einit = true;
 }
@@ -117,7 +117,8 @@ static int g_smooth = 1;
 // as an escape (probability from how many distinct symbols the table holds versus how many it has
 // coded) times the symbol's share across all tables of the same alphabet. Otherwise fine-grained
 // contexts look far more expensive to the parser than they are once the tables are rebuilt.
-template <int NS> static void smooth_prices(const u16 (*f)[NS], const u32* n, int ncl, float (*p)[NS]) {
+template <int NS> static void smooth_prices(const u16 (*f)[NS], const u32* n, int ncl, float (*p)[NS], int bits) {
+  const int SCALE = 1 << bits; const int sh = MAX_BITS - bits;
   double q[NS]; double N = 0;
   for (int s = 0; s < NS; s++) q[s] = 0;
   for (int c = 0; c < ncl; c++) { N += (double)n[c] * SCALE; for (int s = 0; s < NS; s++) q[s] += (double)n[c] * f[c][s]; }
@@ -125,7 +126,7 @@ template <int NS> static void smooth_prices(const u16 (*f)[NS], const u32* n, in
     int nz = 0; for (int s = 0; s < NS; s++) nz += f[c][s] != 0;
     double e = (nz + 1.0) / ((double)n[c] + nz + 1.0);
     for (int s = 0; s < NS; s++) {
-      if (f[c][s]) { p[c][s] = FPRICE[f[c][s]]; continue; }
+      if (f[c][s]) { p[c][s] = FPRICE[(u32)f[c][s] << sh]; continue; }
       double v = 13.0;
       if (g_smooth && N > 0) { double qs = std::max(q[s] / N, 1.0 / 65536); v = -log2(e * qs); if (v > g_unseen_cap) v = g_unseen_cap; if (v < 1.0) v = 1.0; }
       p[c][s] = (float)v;
@@ -137,11 +138,12 @@ static void prices_from_models(const Models& M, Prices& P) {
   memcpy(P.ltype, M.ltype, sizeof P.ltype); memcpy(P.ctype, M.ctype, sizeof P.ctype); memcpy(P.dtype, M.dtype, sizeof P.dtype);
   memcpy(P.litmap, M.litmap, sizeof P.litmap); memcpy(P.llmap, M.llmap, sizeof P.llmap);
   memcpy(P.mlkmap, M.mlkmap, sizeof P.mlkmap); memcpy(P.offmap, M.offmap, sizeof P.offmap); memcpy(P.almap, M.almap, sizeof P.almap);
-  smooth_prices<256>(M.lit, M.litn, M.ncl, P.lit);
-  smooth_prices<LL_SYMS>(M.ll, M.lln, M.nll, P.ll);
-  smooth_prices<MLK_SYMS>(M.mlk, M.mlkn, M.nmk, P.mlk);
-  smooth_prices<OFF_SYMS>(M.off, M.offn, M.nof, P.off);
-  smooth_prices<ALIGN_SYMS>(M.align, M.aln, M.nal, P.align);
+  smooth_prices<256>(M.lit, M.litn, M.ncl, P.lit, LIT_BITS);
+  smooth_prices<LL_SYMS>(M.ll, M.lln, M.nll, P.ll, LL_BITS);
+  smooth_prices<MLK_SYMS>(M.mlk, M.mlkn, M.nmk, P.mlk, MLK_BITS);
+  smooth_prices<OFF_SYMS>(M.off, M.offn, M.nof, P.off, OFF_BITS);
+  if (M.nal) smooth_prices<ALIGN_SYMS>(M.align, M.aln, M.nal, P.align, AL_BITS);
+  else { memset(P.almap, 0, sizeof P.almap); for (int s = 0; s < ALIGN_SYMS; s++) P.align[0][s] = 4.0f; }
 }
 // Reuse the previous block's statistics as the starting guess for a new block: every chunk of the
 // new block takes the types of the previous block's last chunk.
@@ -323,7 +325,7 @@ static void build_models(const u8* base, u32 bs, u32 bn, u32 start, u32 end, con
     }
     cluster(h, (int)nmap, prm.maxcl, M.litmap, outh, cost);
     M.ncl = (int)outh.size();
-    for (int c = 0; c < M.ncl; c++) { normalize_freqs(outh[c].c, 256, M.lit[c]); M.litn[c] = outh[c].tot; }
+    for (int c = 0; c < M.ncl; c++) { normalize_freqs(outh[c].c, 256, M.lit[c], LIT_BITS); M.litn[c] = outh[c].tot; }
   }
   // --- command and distance tables
   auto hll = zeros<LL_SYMS>(M.nct); auto hmlk = zeros<MLK_SYMS>(M.nct * MLK_NCTX);
@@ -341,13 +343,16 @@ static void build_models(const u8* base, u32 bs, u32 bn, u32 start, u32 end, con
     }
   }
   { std::vector<HistT<LL_SYMS>> o; M.nll = cluster(hll, M.nct, LL_MAXCL, M.llmap, o, cost);
-    for (int c = 0; c < M.nll; c++) { normalize_freqs(o[c].c, LL_SYMS, M.ll[c]); M.lln[c] = o[c].tot; } }
+    for (int c = 0; c < M.nll; c++) { normalize_freqs(o[c].c, LL_SYMS, M.ll[c], LL_BITS); M.lln[c] = o[c].tot; } }
   { std::vector<HistT<MLK_SYMS>> o; M.nmk = cluster(hmlk, M.nct * MLK_NCTX, MLK_MAXCL, M.mlkmap, o, cost);
-    for (int c = 0; c < M.nmk; c++) { normalize_freqs(o[c].c, MLK_SYMS, M.mlk[c]); M.mlkn[c] = o[c].tot; } }
+    for (int c = 0; c < M.nmk; c++) { normalize_freqs(o[c].c, MLK_SYMS, M.mlk[c], MLK_BITS); M.mlkn[c] = o[c].tot; } }
   { std::vector<HistT<OFF_SYMS>> o; M.nof = cluster(hoff, M.ndt * 4, OFF_MAXCL, M.offmap, o, cost);
-    for (int c = 0; c < M.nof; c++) { normalize_freqs(o[c].c, OFF_SYMS, M.off[c]); M.offn[c] = o[c].tot; } }
+    for (int c = 0; c < M.nof; c++) { normalize_freqs(o[c].c, OFF_SYMS, M.off[c], OFF_BITS); M.offn[c] = o[c].tot; } }
   { std::vector<HistT<ALIGN_SYMS>> o; M.nal = cluster(hal, M.ndt, AL_MAXCL, M.almap, o, cost);
-    for (int c = 0; c < M.nal; c++) { normalize_freqs(o[c].c, ALIGN_SYMS, M.align[c]); M.aln[c] = o[c].tot; } }
+    u64 na = 0; for (int c = 0; c < M.nal; c++) na += o[c].tot;
+    // If modelling the low offset bits saves under 1.5%, store them raw: one less decode per offset.
+    if (cost >= 4.0 * na * prm.align_gain) M.nal = 0;
+    for (int c = 0; c < M.nal; c++) { normalize_freqs(o[c].c, ALIGN_SYMS, M.align[c], AL_BITS); M.aln[c] = o[c].tot; } }
 }
 
 // ---------------- optimal parse ----------------
@@ -469,7 +474,7 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
 }
 
 // ---------------- block emission ----------------
-struct Ev { u16 start, freq; u8 st; };
+struct Ev { u16 start, freq; u8 st, bits; };
 static double g_bits[8];  // lit, ll, mlk, off, align, len-extra, off-extra
 static u64 g_kinds[20];
 static u64 g_tables[8];
@@ -486,9 +491,9 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   for (int c = 0; c < M.nal; c++) cumul(M.align[c], ALIGN_SYMS, cal[c]);
   std::vector<Ev> ev; ev.reserve(bn + 4 * seqs.size() + 16);
   BitWriter bits;
-  auto add = [&](u16 start, u16 freq, u8 st) {
+  auto add = [&](u16 start, u16 freq, u8 st, u8 bits) {
     if (!freq) { fprintf(stderr, "internal error: zero-frequency symbol\n"); abort(); }
-    ev.push_back(Ev{start, freq, st});
+    ev.push_back(Ev{start, freq, st, bits});
   };
   u32 pos = bs, li = 0; u32 r[NUM_REPS]; memcpy(r, reps_in, sizeof r);
   const int lg = M.lgchunk; const LitMode* lm = &lit_mode(0);
@@ -506,7 +511,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
       for (u32 k = 0; k < n; k++, pos++) {
         const u8* q = base + pos; u8 mb = *(q - r[0]); u32 cl = lmap[lm->A[*(q - 1)] + lm->B[mb] + lm->C[*(q - 2)] + lm->D[pos & 3]];
         u8 s = lm->sub ? (u8)(base[pos] - mb) : base[pos];
-        add(clit[cl][s], M.lit[cl][s], (u8)(li & 1)); li++; g_bits[0] += FPRICE[M.lit[cl][s]];
+        add(clit[cl][s], M.lit[cl][s], (u8)(li & 1), LIT_BITS); li++; g_bits[0] += FPRICE[(u32)M.lit[cl][s] << (MAX_BITS - LIT_BITS)];
       }
       cnt -= n; if (pos >= chunk_end) upd();
     }
@@ -514,17 +519,18 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   for (const Seq& s : seqs) {
     u32 sym, nb, ex;
     if (pos >= chunk_end) upd();
-    ll_code(s.ll, sym, nb, ex); add(cll[llc][sym], M.ll[llc][sym], 2); bits.put(ex, nb); g_bits[1] += FPRICE[M.ll[llc][sym]]; g_bits[5] += nb;
+    ll_code(s.ll, sym, nb, ex); add(cll[llc][sym], M.ll[llc][sym], 2, LL_BITS); bits.put(ex, nb); g_bits[1] += FPRICE[(u32)M.ll[llc][sym] << (MAX_BITS - LL_BITS)]; g_bits[5] += nb;
     lits(s.ll);
     ml_code(s.ml - MIN_MATCH, sym, nb, ex);
     u32 c = mmap[mlk_ctx(s.ll)]; u32 ms = std::min<u32>(s.kind, 3) * MLC_SYMS + sym;
-    add(cmlk[c][ms], M.mlk[c][ms], 3); bits.put(ex, nb); g_bits[2] += FPRICE[M.mlk[c][ms]]; g_bits[5] += nb;
+    add(cmlk[c][ms], M.mlk[c][ms], 3, MLK_BITS); bits.put(ex, nb); g_bits[2] += FPRICE[(u32)M.mlk[c][ms] << (MAX_BITS - MLK_BITS)]; g_bits[5] += nb;
     g_kinds[s.kind]++;
     if (s.kind >= 3) {
       sym = off_symbol(s, nb, ex);
       u32 oc = omap[std::min<u32>(s.ml - MIN_MATCH, 3)];
-      add(coff[oc][sym], M.off[oc][sym], 2); g_bits[3] += FPRICE[M.off[oc][sym]]; g_bits[6] += nb >= 4 ? nb - 4 : nb;
-      if (nb >= 4) { bits.put(ex >> 4, nb - 4); add(cal[alc][ex & 15], M.align[alc][ex & 15], 3); g_bits[4] += FPRICE[M.align[alc][ex & 15]]; }
+      add(coff[oc][sym], M.off[oc][sym], 2, OFF_BITS); g_bits[3] += FPRICE[(u32)M.off[oc][sym] << (MAX_BITS - OFF_BITS)]; g_bits[6] += nb >= 4 ? nb - 4 : nb;
+      if (nb >= 4 && M.nal) { bits.put(ex >> 4, nb - 4); add(cal[alc][ex & 15], M.align[alc][ex & 15], 3, AL_BITS); g_bits[4] += FPRICE[(u32)M.align[alc][ex & 15] << (MAX_BITS - AL_BITS)]; }
+      else if (nb >= 4) { bits.put(ex, nb); g_bits[4] += 4; }
       else bits.put(ex, nb);
     }
     rep_update(r, s.kind, s.off);
@@ -539,9 +545,9 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   u32 x[NUM_STREAMS]; for (int i = 0; i < NUM_STREAMS; i++) x[i] = RANS_L;
   for (size_t i = ev.size(); i-- > 0;) {
     const Ev& e = ev[i]; u32 xs = x[e.st];
-    u64 xmax = (u64)((RANS_L >> SCALE_BITS) << 16) * e.freq;
+    u64 xmax = (u64)((RANS_L >> e.bits) << 16) * e.freq;
     if (xs >= xmax) { *--ptr = (u16)xs; xs >>= 16; }
-    x[e.st] = ((xs / e.freq) << SCALE_BITS) + (xs % e.freq) + e.start;
+    x[e.st] = ((xs / e.freq) << e.bits) + (xs % e.freq) + e.start;
   }
   for (int i = NUM_STREAMS - 1; i >= 0; i--) { *--ptr = (u16)(x[i] >> 16); *--ptr = (u16)x[i]; }
   size_t rb = (w.data() + w.size() - ptr) * 2;
@@ -560,7 +566,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   for (int c = 0; c < M.nmk; c++) write_table(hw, M.mlk[c], MLK_SYMS);
   hw.put(M.nof - 1, 4); write_map(hw, M.offmap, M.ndt * 4, M.nof);
   for (int c = 0; c < M.nof; c++) write_table(hw, M.off[c], OFF_SYMS);
-  hw.put(M.nal - 1, 2); write_map(hw, M.almap, M.ndt, M.nal);
+  hw.put(M.nal, 3); if (M.nal) write_map(hw, M.almap, M.ndt, M.nal);
   for (int c = 0; c < M.nal; c++) write_table(hw, M.align[c], ALIGN_SYMS);
   hw.flush();
   g_tables[0] += M.ncl; g_tables[1] += M.nll; g_tables[2] += M.nmk; g_tables[3] += M.nof; g_tables[4] += M.nlt; g_tables[5] += M.nct; g_tables[6] += M.ndt; g_tables[7]++;
@@ -586,7 +592,6 @@ std::vector<u8> compress(const u8* base, size_t n, const Params& prm) {
   MatchStore ms; std::vector<u32> mst; std::vector<Match> tmp(prm.nice + 8);
   std::vector<Node> nodes; std::vector<Seq> seqs, sseqs; LitInfo L;
   int modestat[NUM_LITMODES] = {0}; size_t hdr_bytes = 0, nseq_tot = 0, stored = 0;
-  bool prior = false;
   const u32 t2 = prm.far2, t3 = prm.far3;
   for (u64 bs64 = 0; bs64 < n; bs64 += B) {
     const u32 bs = (u32)bs64; const u32 bn = (u32)std::min<u64>(B, n - bs64);
@@ -627,7 +632,6 @@ std::vector<u8> compress(const u8* base, size_t n, const Params& prm) {
         }
         g_time[2] += now() - t0;
       }
-      prior = true;
       seqs.insert(seqs.end(), sseqs.begin(), sseqs.end());
       carry = cout; memcpy(sreps, creps, sizeof sreps);
     }

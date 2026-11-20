@@ -12,7 +12,8 @@ typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t
 
 namespace gt {
 
-enum { SCALE_BITS = 12, SCALE = 1 << SCALE_BITS, RANS_L = 1 << 16 };
+// Probability precision per alphabet (bits). Smaller tables stay in the fastest cache.
+enum { LIT_BITS = 11, MLK_BITS = 11, LL_BITS = 10, OFF_BITS = 10, AL_BITS = 8, MAX_BITS = 12, RANS_L = 1 << 16 };
 enum { MIN_MATCH = 2, MAX_MATCH = 65537, PAD = 16 };
 enum { LL_SYMS = 56, MLC_SYMS = 54, MLK_SYMS = 4 * MLC_SYMS, OFF_SLOTS = 60, NUM_SPECIAL = 13, OFF_SYMS = OFF_SLOTS + NUM_SPECIAL, ALIGN_SYMS = 16 };
 enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 10, NUM_REPS = 4 };
@@ -20,14 +21,15 @@ enum { NUM_STREAMS = 4, MAXCTX = 1024, MAXCL = 64, NUM_LITMODES = 10, NUM_REPS =
 // Kinds >= 3 are signalled as kind 3 in the MLK symbol; the OFF symbol then selects slot or special.
 static const int NEAR_DELTA[6] = {-1, 1, -2, 2, -3, 3};
 enum { MLK_NCTX = 12, NT = 16, MAXCH = 4096, LL_MAXCL = 8, MLK_MAXCL = 16, OFF_MAXCL = 16, AL_MAXCL = 4 };
+static const u8 MLK_CTX_LUT[32] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10};
 static inline u32 mlk_ctx(u32 ll) {  // context for the match symbol from the literal run length
-  return ll < 8 ? ll : ll < 12 ? 8 : ll < 16 ? 9 : ll < 32 ? 10 : 11;
+  return ll < 32 ? MLK_CTX_LUT[ll] : 11;
 }
 
 static inline u32 ilog2(u32 v) { return 31 - __builtin_clz(v); }
-static inline u32 load32(const u8* p) { u32 v; memcpy(&v, p, 4); return v; }
-static inline u32 load16(const u8* p) { u16 v; memcpy(&v, p, 2); return v; }
-static inline u64 load64(const u8* p) { u64 v; memcpy(&v, p, 8); return v; }
+static inline u32 load32(const u8* p) { u32 v; __builtin_memcpy(&v, p, 4); return v; }
+static inline u32 load16(const u8* p) { u16 v; __builtin_memcpy(&v, p, 2); return v; }
+static inline u64 load64(const u8* p) { u64 v; __builtin_memcpy(&v, p, 8); return v; }
 
 // ---- value <-> (symbol, extra bits) codes
 static inline void ll_code(u32 v, u32& sym, u32& nb, u32& ex) {
@@ -87,7 +89,7 @@ static inline u64 get_varint(const u8*& p) {
 }
 
 // ---- frequency tables
-void normalize_freqs(const u32* cnt, int n, u16* f);
+void normalize_freqs(const u32* cnt, int n, u16* f, int bits);
 void write_table(BitWriter& bw, const u16* f, int n);
 void read_table(BitReader& br, u16* f, int n);
 void write_map(BitWriter& bw, const u8* map, int nctx, int ncl);
@@ -103,6 +105,7 @@ struct Params {
   int hashbits = 20;
   int modemask = 0xffff; // enabled literal modes
   double hdr_nz = 8.0, hdr_base = 32.0;  // table cost model used when clustering: base + per used symbol
+  double align_gain = 0.985;  // model low offset bits only if that costs less than this share of raw
   int smooth = 0;      // smoothed prices for symbols a table has not seen
   double unseen_cap = 14.0;
   int rankslots = 32;  // contexts kept separate when ranking literal modes for a type

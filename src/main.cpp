@@ -32,12 +32,26 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "-h")) P.hashbits = v; else if (!strcmp(a, "-m")) P.modemask = v;
     else if (!strcmp(a, "-k")) P.lgchunk = v; else if (!strcmp(a, "-s")) P.lgseg = v; else if (!strcmp(a, "-u")) P.lgsub = v; else if (!strcmp(a, "-rs")) P.rankslots = v;
     else if (!strcmp(a, "-hn")) P.hdr_nz = atof(argv[i + 1]); else if (!strcmp(a, "-hb")) P.hdr_base = atof(argv[i + 1]);
+    else if (!strcmp(a, "-ag")) P.align_gain = atof(argv[i + 1]);
     else if (!strcmp(a, "-sm")) P.smooth = v; else if (!strcmp(a, "-uc")) P.unseen_cap = atof(argv[i + 1]);
     else if (!strcmp(a, "-f2")) P.far2 = v; else if (!strcmp(a, "-f3")) P.far3 = v; else if (!strcmp(a, "-t")) P.maxtypes = v;
     else { fprintf(stderr, "unknown option %s\n", a); return 2; }
     i++;
   }
   const char* in = argv[argc - 2]; const char* out = argv[argc - 1];
+  if (argv[1][0] == 'b') {  // decode benchmark: gt b <reps> file.gt
+    int reps = atoi(out); double best = 1e9;
+    for (int r = 0; r < reps; r++) {
+      FILE* fi = fopen(in, "rb"); FILE* fo = fopen("/dev/null", "wb"); if (!fi || !fo) return 1;
+      setvbuf(fo, nullptr, _IONBF, 0);
+      auto t = std::chrono::steady_clock::now();
+      if (!decompress(fi, fo)) { fprintf(stderr, "decode error\n"); return 1; }
+      double d = std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+      if (d < best) best = d;
+      fclose(fi); fclose(fo);
+    }
+    printf("%.4f\n", best); return 0;
+  }
   auto t0 = std::chrono::steady_clock::now();
   if (argv[1][0] == 'c') {
     size_t n = 0; std::vector<u8> srcbuf = read_file(in, n); const u8* src = srcbuf.data() + PAD;
