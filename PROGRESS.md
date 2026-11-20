@@ -68,6 +68,15 @@ Baselines on this machine (Silesia total, bytes):
     Smaller than brotli on 10 of 12 files; `samba` +0.04% and `xml` +0.20% are still larger.
     Decode is faster on 10 of 12; `reymont` (0.95x) and `webster` (0.97x) are slower.
 
+14. Re-tuned the clustering table-cost estimate after headers got cheaper: no gain (lower values
+    were 0.07-0.14% worse on the test set). Left unchanged.
+
+## Next ideas, in order
+
+1. Coarser table frequencies where a table codes few symbols (cheaper headers; targets `xml`).
+2. Column contexts for fixed-width records (generalises the pos & 3 contexts; targets `sao`).
+3. Window ring without the slide copy, to bring decompress memory from 25 MB to about 21 MB.
+
 ## Open items
 
 - `xml` and `samba` still marginally larger than brotli (header size, deeper match search).
