@@ -34,8 +34,25 @@ Baselines on this machine (Silesia total, bytes):
    brotli -q 11**, 0.86 MB/s compress (2.1x brotli). Not yet acceptable on the other axes:
    657 MB compress memory, 114 MB decompress memory, 140 MB/s decompress.
 
+6. Memory work: compact match storage, segmented parse, 1 MB sub-blocks for match storage,
+   streaming encoder (sliding input window) and streaming decoder (window + quarter-window
+   headroom). Compress memory 657 MB -> 220 MB; decompress memory 114 MB -> 25 MB.
+7. Decoder speed: per-alphabet table precision (11/10/8 bits instead of 12, no ratio loss),
+   branch-free rANS refill, raw low offset bits when modelling them does not pay, huge-page hint,
+   static link, and a fix for hardened memcpy turning 8-byte stores into library calls (17% of all
+   instructions). In-process decode roughly doubled.
+8. Literal modes became per chunk type (lookup-table based contexts). Tried and dropped: sampled
+   trial parses per mode, smoothed prices for unseen symbols, a tunable table-cost model. Mode
+   choice still interacts with the parse and costs up to ~1% on some files (`mr`); open.
+9. Position-alignment contexts (pos & 3) for the literal-run, match and offset symbols, chosen per
+   block against the position-free alternative. -1.1% on the test set, `sao` -3.9%, text unchanged.
+10. Full corpus (results/gt-v8): **48,658,032 bytes, 1.83% smaller than brotli -q 11** and smaller
+    than xz -9. 0.89 MB/s compress (2.2x brotli), 220 MB compress memory (brotli 238 MB), 25 MB
+    decompress memory (brotli 20 MB). Decode speed about level with brotli; being re-measured.
+
 ## Open items
 
-- Decoder speed (currently ~150 MB/s; not yet optimised).
-- Decoder memory: currently holds the whole output; needs a sliding window to match brotli.
-- Table header coding is naive (about 2x brotli's header cost).
+- Literal mode selection is unstable (see 8).
+- Longer optimal-parse match limit helps `nci` by ~3% but costs time; needs a cheaper long-match path.
+- Table header coding is still naive.
+- Decompress memory is 25 MB vs brotli's 20 MB.
