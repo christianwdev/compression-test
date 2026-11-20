@@ -2,20 +2,6 @@
 #include <chrono>
 using namespace gt;
 
-// Returns the file with PAD zero bytes before and PAD + 64 after the contents.
-static std::vector<u8> read_file(const char* path, size_t& n) {
-  FILE* f = fopen(path, "rb"); if (!f) { perror(path); exit(1); }
-  fseek(f, 0, SEEK_END); n = (size_t)ftell(f); fseek(f, 0, SEEK_SET);
-  std::vector<u8> b(n + 2 * PAD + 64, 0);
-  if (n && fread(b.data() + PAD, 1, n, f) != n) { perror("read"); exit(1); }
-  fclose(f); return b;
-}
-static void write_file(const char* path, const u8* d, size_t n) {
-  FILE* f = fopen(path, "wb"); if (!f) { perror(path); exit(1); }
-  if (n && fwrite(d, 1, n, f) != n) { perror("write"); exit(1); }
-  fclose(f);
-}
-
 int main(int argc, char** argv) {
 
   if (argc < 4) { fprintf(stderr, "usage: gt c [-w lgwin] [-b lgblock] [-d depth] [-n nice] [-p passes] [-c maxcl] [-v] in out\n       gt d in out\n"); return 2; }
@@ -54,10 +40,15 @@ int main(int argc, char** argv) {
   }
   auto t0 = std::chrono::steady_clock::now();
   if (argv[1][0] == 'c') {
-    size_t n = 0; std::vector<u8> srcbuf = read_file(in, n); const u8* src = srcbuf.data() + PAD;
-    std::vector<u8> c = compress(src, n, P);
-    write_file(out, c.data(), c.size());
-    if (P.verbose) fprintf(stderr, "%zu -> %zu (%.3fx) %.2fs\n", n, c.size(), (double)n / c.size(),
+    FILE* fi = fopen(in, "rb"); if (!fi) { perror(in); return 1; }
+    fseek(fi, 0, SEEK_END); u64 n = (u64)ftell(fi); fseek(fi, 0, SEEK_SET);
+    setvbuf(fi, nullptr, _IONBF, 0);
+    FILE* fo = fopen(out, "wb"); if (!fo) { perror(out); return 1; }
+    u64 csize = 0;
+    bool ok = compress(fi, n, fo, P, &csize);
+    fclose(fi); if (fclose(fo) != 0) ok = false;
+    if (!ok) { fprintf(stderr, "compression failed\n"); return 1; }
+    if (P.verbose) fprintf(stderr, "%llu -> %llu (%.3fx) %.2fs\n", (unsigned long long)n, (unsigned long long)csize, (double)n / (csize ? csize : 1),
                            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   } else {
     FILE* fi = fopen(in, "rb"); if (!fi) { perror(in); return 1; }

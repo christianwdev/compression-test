@@ -118,8 +118,8 @@ struct Params {
   int verbose = 0;
 };
 
-// `base` must have PAD readable zero bytes before it and PAD + 8 readable bytes after base + n.
-std::vector<u8> compress(const u8* base, size_t n, const Params& p);
+// Streaming encode of the n bytes of fin to fout. Inputs must be smaller than 4 GB.
+bool compress(FILE* fin, u64 n, FILE* fout, const Params& p, u64* out_size);
 // Streaming decode from fin to fout.
 bool decompress(FILE* fin, FILE* fout);
 

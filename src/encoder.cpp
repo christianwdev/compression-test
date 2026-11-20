@@ -28,11 +28,12 @@ static inline u32 match_len(const u8* p, const u8* q, u32 maxl) {
 struct MF {
   const u8* b; u32 n, W, wmask, nice; int depth, hb;
   std::vector<u32> head, son, h2, h3;
-  MF(const u8* base, u32 n_, const Params& P) {
-    b = base; n = n_; nice = P.nice; depth = P.depth; hb = P.hashbits;
-    u32 w = 1u << P.lgwin; while (w / 2 >= n && w > 65536) w /= 2;
+  // b is the (virtual) address of file position 0; n is the end of the data currently loaded.
+  MF(u64 total, const Params& P) {
+    b = nullptr; n = 0; nice = P.nice; depth = P.depth; hb = P.hashbits;
+    u32 w = 1u << P.lgwin; while (w / 2 >= total && w > 65536) w /= 2;
     W = w; wmask = W - 1;
-    head.assign((size_t)1 << hb, NIL); son.resize(2 * (size_t)std::min<u64>(W, (u64)n + 1));
+    head.assign((size_t)1 << hb, NIL); son.resize(2 * (size_t)std::min<u64>(W, total + 1));
     h2.assign(65536, NIL); h3.assign(65536, NIL);
   }
   u32 find(u32 pos, Match* out, bool want) {
@@ -474,7 +475,8 @@ static void parse(const u8* base, u32 bs, u32 sb, u32 bn, const u32* reps_in, u3
 }
 
 // ---------------- block emission ----------------
-struct Ev { u16 start, freq; u8 st, bits; };
+// One coded symbol: start (12 bits) | freq (12) | rANS state index (2) | precision (4)
+typedef u32 Ev;
 static double g_bits[8];  // lit, ll, mlk, off, align, len-extra, off-extra
 static u64 g_kinds[20];
 static u64 g_tables[8];
@@ -493,7 +495,7 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   BitWriter bits;
   auto add = [&](u16 start, u16 freq, u8 st, u8 bits) {
     if (!freq) { fprintf(stderr, "internal error: zero-frequency symbol\n"); abort(); }
-    ev.push_back(Ev{start, freq, st, bits});
+    ev.push_back((u32)start | ((u32)freq << 12) | ((u32)st << 24) | ((u32)bits << 26));
   };
   u32 pos = bs, li = 0; u32 r[NUM_REPS]; memcpy(r, reps_in, sizeof r);
   const int lg = M.lgchunk; const LitMode* lm = &lit_mode(0);
@@ -544,10 +546,10 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   u16* ptr = w.data() + w.size();
   u32 x[NUM_STREAMS]; for (int i = 0; i < NUM_STREAMS; i++) x[i] = RANS_L;
   for (size_t i = ev.size(); i-- > 0;) {
-    const Ev& e = ev[i]; u32 xs = x[e.st];
-    u64 xmax = (u64)((RANS_L >> e.bits) << 16) * e.freq;
+    const Ev e = ev[i]; const u32 st = (e >> 24) & 3, eb = e >> 26, fr = (e >> 12) & 0xfff; u32 xs = x[st];
+    u64 xmax = (u64)((RANS_L >> eb) << 16) * fr;
     if (xs >= xmax) { *--ptr = (u16)xs; xs >>= 16; }
-    x[e.st] = ((xs / e.freq) << e.bits) + (xs % e.freq) + e.start;
+    x[st] = ((xs / fr) << eb) + (xs % fr) + (e & 0xfff);
   }
   for (int i = NUM_STREAMS - 1; i >= 0; i--) { *--ptr = (u16)(x[i] >> 16); *--ptr = (u16)x[i]; }
   size_t rb = (w.data() + w.size() - ptr) * 2;
@@ -578,30 +580,58 @@ static void emit_block(const u8* base, u32 bs, u32 bn, const u32* reps_in, const
   if (hdr_bytes) *hdr_bytes += hw.buf.size();
 }
 
-std::vector<u8> compress(const u8* base, size_t n, const Params& prm) {
+// Streaming compressor. Holds one window of history plus the block being coded and some lookahead,
+// not the whole file.
+bool compress(FILE* fin, u64 n, FILE* fout, const Params& prm, u64* out_size) {
+  if (n >= 0xfff00000ull) { fprintf(stderr, "inputs of 4 GB or more are not supported\n"); return false; }
   einit(); g_smooth = prm.smooth; g_unseen_cap = prm.unseen_cap; g_hdr_nz = prm.hdr_nz; g_hdr_base = prm.hdr_base;
-  std::vector<u8> out = {'G', 'T', '0', 3};
+  MF mf(n, prm);
+  const u32 B = 1u << prm.lgblock;
+  const u64 LOOK = (u64)std::max(prm.nice, 1 << 16) + 64;
+  const u64 HIST = (u64)mf.W + 64;                       // history that must stay addressable
+  const u64 cap = std::min<u64>(n, HIST + B + mf.W / 4 + LOOK);
+  std::vector<u8> buf(cap + 2 * PAD + 96, 0);
+  u8* data = buf.data() + PAD;
+  u64 win_start = 0, loaded = 0;                         // buf holds file positions [win_start, loaded)
+  const u8* base = data;
+  auto fill = [&]() {
+    size_t want = (size_t)std::min<u64>(n - loaded, cap - (loaded - win_start));
+    size_t got = want ? fread(data + (loaded - win_start), 1, want, fin) : 0;
+    loaded += got; memset(data + (loaded - win_start), 0, 64);
+    mf.b = base; mf.n = (u32)loaded;
+    return got == want;
+  };
+  if (!fill()) return false;
+  std::vector<u8> out = {'G', 'T', '0', 4};
   put_varint(out, n);
-  MF mf(base, (u32)n, prm);
   out.push_back((u8)ilog2(mf.W)); out.push_back((u8)prm.lgblock);
+  u64 total_out = 0;
   Prices* pr = new Prices; default_prices(*pr, prm.lgchunk);
   Models* M = new Models;
   u32 reps[NUM_REPS] = {1, 2, 3, 4};
-  const u32 B = 1u << prm.lgblock;
   const u32 SB = std::min(B, 1u << prm.lgsub);
   MatchStore ms; std::vector<u32> mst; std::vector<Match> tmp(prm.nice + 8);
   std::vector<Node> nodes; std::vector<Seq> seqs, sseqs; LitInfo L;
   int modestat[NUM_LITMODES] = {0}; size_t hdr_bytes = 0, nseq_tot = 0, stored = 0;
   const u32 t2 = prm.far2, t3 = prm.far3;
-  for (u64 bs64 = 0; bs64 < n; bs64 += B) {
+  bool ok = true;
+  for (u64 bs64 = 0; bs64 < n && ok; bs64 += B) {
     const u32 bs = (u32)bs64; const u32 bn = (u32)std::min<u64>(B, n - bs64);
+    if (loaded < std::min<u64>(n, bs64 + bn + LOOK)) {  // need more input: slide the window, then read
+      u64 ns = bs64 > HIST ? bs64 - HIST : 0;
+      if (ns > win_start) {
+        memmove(data, data + (ns - win_start), (size_t)(loaded - ns));
+        win_start = ns; base = data - win_start;
+      }
+      if (!fill()) { ok = false; break; }
+    }
     carry_prior(*pr, (int)((bn + (1u << prm.lgchunk) - 1) >> prm.lgchunk));
     seqs.clear();
     u32 sreps[NUM_REPS]; memcpy(sreps, reps, sizeof sreps); u32 carry = 0;
     for (u32 sb = 0; sb < bn; sb += SB) {
       const u32 sn = std::min(SB, bn - sb);
       double t0 = now();
-      ms.cnt.assign(sn, 0); ms.off.clear(); ms.len.clear();
+      ms.cnt.assign(sn, 0); ms.off.clear(); ms.len.clear(); ms.off.reserve((size_t)sn * 6); ms.len.reserve((size_t)sn * 6);
       for (u32 i = 0; i < sn; i++) {
         u32 cnt = mf.find(bs + sb + i, tmp.data(), true);
         u32 kept = 0;
@@ -650,7 +680,11 @@ std::vector<u8> compress(const u8* base, size_t n, const Params& prm) {
       memcpy(reps, sreps, sizeof reps);
       nseq_tot += seqs.size();
     }
+    if (fwrite(out.data(), 1, out.size(), fout) != out.size()) ok = false;
+    total_out += out.size(); out.clear();
   }
+  if (n == 0) { if (fwrite(out.data(), 1, out.size(), fout) != out.size()) ok = false; total_out += out.size(); }
+  if (out_size) *out_size = total_out;
   if (prm.verbose) {
     fprintf(stderr, "time: matchfind %.2f parse %.2f models %.2f emit %.2f\n", g_time[0], g_time[1], g_time[2], g_time[3]);
     fprintf(stderr, "litmodes:"); for (int i = 0; i < NUM_LITMODES; i++) fprintf(stderr, " %d", modestat[i]);
@@ -663,7 +697,7 @@ std::vector<u8> compress(const u8* base, size_t n, const Params& prm) {
     fprintf(stderr, " %llu near1 %llu\n", (unsigned long long)a, (unsigned long long)b);
   }
   delete pr; delete M;
-  return out;
+  return ok;
 }
 
 }  // namespace gt

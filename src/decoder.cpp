@@ -159,7 +159,7 @@ bool decompress(FILE* fin, FILE* fout) {
   init_static();
   In in(fin);
   const u8* p = in.need(6);
-  if (!p || memcmp(p, "GT0\3", 4)) return false;
+  if (!p || memcmp(p, "GT0\4", 4)) return false;
   in.pos += 4;
   size_t av = in.avail_hint(); if (av < 3) return false;
   p = in.buf.data() + in.pos; const u8* p0 = p;
